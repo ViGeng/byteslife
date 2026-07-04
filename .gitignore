@@ -1,0 +1,7 @@
+.DS_Store
+.build/
+*.app
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+xcuserdata/
