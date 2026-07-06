@@ -1,0 +1,6 @@
+{"type":"assistant","sessionId":"S1","requestId":"R1","uuid":"U1","parentUuid":"P0","timestamp":"2026-07-06T12:00:00.000Z","cwd":"/Users/test/proj","version":"1.0.0","message":{"id":"M1","role":"assistant","model":"claude","type":"message","usage":{"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":5,"cache_read_input_tokens":2}}}
+{"type":"assistant","sessionId":"S1","requestId":"R2","uuid":"U2","timestamp":"2026-07-06T12:00:00.000Z","cwd":"/Users/test/proj","message":{"id":"M2","role":"assistant","usage":{"input_tokens":200,"output_tokens":20}}}
+{"type":"user","sessionId":"S1","uuid":"U-user","timestamp":"2026-07-06T12:00:00.000Z","message":{"role":"user","content":"hello"}}
+{"type":"assistant","sessionId":"S1","requestId":"R3","uuid":"U3","timestamp":"2026-07-06T12:00:00.000Z","message":{"id":"M3","role":"assistant","usage":{"input_tokens":300,"output_tokens":30,"cache_creation_input_tokens":7,"cache_read_input_tokens":1}}}
+{"type":"assistant","sessionId":"S1","requestId":"R3","uuid":"U4","timestamp":"2026-07-06T12:00:00.000Z","message":{"id":"M3","role":"assistant","usage":{"input_tokens":300,"output_tokens":30,"cache_creation_input_tokens":7,"cache_read_input_tokens":1}}}
+{ this is not valid json

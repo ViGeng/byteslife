@@ -1,6 +1,8 @@
 # ByteLife v1 scaffold: implementation plan
 
-Status: approved for implementation, not yet executed. This plan was authored on 2026-07-04 on a planning machine with Command Line Tools only. It is written so that a developer, or Claude Code on the development Mac, can execute it top to bottom. The grounding research lives in [docs/research/](docs/research/), especially [feasibility.md](docs/research/feasibility.md).
+Status: executed on the development Mac on 2026-07-07 (see CHANGELOG.md, iteration 2). This plan was authored on 2026-07-04 on a planning machine with Command Line Tools only. The grounding research lives in [docs/research/](docs/research/), especially [feasibility.md](docs/research/feasibility.md).
+
+Deviations from the letter of the plan, recorded after execution: the mouse channel is named inputMouseMilliPixels; the input permission recheck is a 10-second timer rather than an app-foreground hook, because an accessory menubar app has no conventional foreground moment; the disabled availability state is reserved but not yet reachable in v1; and a DayBucket helper file was added to the Store layer so the write and read paths share one bucketing rule. A post-implementation review pass hardened the scaffold beyond the plan: AI ingest commits dedup keys, samples, and file offsets in one SQLite transaction; transcript watchers tear down on delete and rename; network and disk baselines advance only after their deltas commit; and the event-tap session recovers from creation failure instead of reporting a false running state.
 
 ## Context
 

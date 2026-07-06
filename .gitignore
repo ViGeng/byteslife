@@ -1,6 +1,7 @@
 .DS_Store
 .build/
 *.app
+dist/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

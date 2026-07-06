@@ -1,8 +1,8 @@
 # ByteLife (working title)
 
-ByteLife is a planned native macOS app that tracks the digital side of a person's existence, centered on the concept of bytes. It aggregates AI token usage, network traffic, disk activity, screen time, and physical input into one dashboard of digital life.
+ByteLife is a native macOS app that tracks the digital side of a person's existence, centered on the concept of bytes. It aggregates AI token usage, network traffic, disk activity, screen time, and physical input into one dashboard of digital life.
 
-The project is in the concept phase. This repository contains design and research documents only. There is no code yet.
+The v1 scaffold is implemented and running: a menubar app with five working collectors, a SQLite store with minute-level rollups, and a deliberately plain panel UI. The Ledger visual direction described below is the next layer and has not been applied yet. The concept brief and the research under docs/ remain the design ground truth.
 
 ## Premise
 
@@ -67,19 +67,29 @@ The key facts from the research, detailed in [docs/research/feasibility.md](docs
 - Missing sources degrade gracefully into visible, honest states instead of empty panels.
 - If commercialized, pricing follows the one-time-purchase norm of the niche.
 
-## Version 1 scope sketch
+## Version 1 scope
 
-- A menubar extra shows today's running balance and drops down a five-account day sheet.
-- A General Ledger window holds the posted history and the trial balance.
-- The nightly Reconcile ritual produces the daily receipt, and a weekly Statement rolls seven days up.
-- Data collectors cover the five families listed in the feasibility table.
+- A menubar extra shows today's running balance and drops down a five-account day sheet. (Implemented as a plain panel; the Ledger skin comes later.)
+- A General Ledger window holds the posted history and the trial balance. (Not yet built.)
+- The nightly Reconcile ritual produces the daily receipt, and a weekly Statement rolls seven days up. (Not yet built.)
+- Data collectors cover the five families listed in the feasibility table. (Implemented.)
 - Version 1 deliberately omits cloud sync, accounts, goals, streaks, social features, per-app network attribution, and any iOS companion.
+
+## Building and running
+
+The package needs macOS 14+ and a Swift 6 toolchain. `swift build` and `swift test` cover the core library (81 tests). `scripts/package-app.sh` produces an ad-hoc-signed `dist/ByteLife.app` that lives in the menubar with no Dock icon.
+
+On first launch, four collectors run immediately with no permission prompts. Input counting stays in a visible "needs permission" state until Input Monitoring is granted from the panel, because the app never raises the prompt on its own. The AI collector backfills token history from existing Claude Code transcripts under `~/.claude/projects` into the correct historical days, deduplicated by the `(sessionId, message.id, requestId)` key. Data lands in `~/Library/Application Support/ByteLife/bytelife.sqlite`.
 
 ## Repository layout
 
-- [README.md](README.md) holds the current concept brief and is updated each iteration.
-- [PLAN.md](PLAN.md) is the approved implementation plan for the v1 scaffold, written to be executed on the development Mac.
+- [README.md](README.md) holds the current concept brief and project state, updated each iteration.
+- [PLAN.md](PLAN.md) is the v1 scaffold plan, now executed, with post-execution deviations recorded in its status section.
 - [CHANGELOG.md](CHANGELOG.md) is the append-only iteration log.
+- [Sources/ByteLifeCore/](Sources/ByteLifeCore/) is the library with all logic: the model layer, the SQLite store, the collector framework, and the five collectors.
+- [Sources/ByteLifeApp/](Sources/ByteLifeApp/) is the thin menubar app shell.
+- [Tests/ByteLifeCoreTests/](Tests/ByteLifeCoreTests/) holds the test suite and the hand-authored transcript fixtures.
+- [scripts/package-app.sh](scripts/package-app.sh) assembles and ad-hoc-signs `dist/ByteLife.app`.
 - [docs/research/](docs/research/) holds the raw output of the 2026-07-04 concept workflow: feasibility research, the landscape scan, the five concept sheets, and the judge panel results.
 
 ## Decisions so far (2026-07-04)
