@@ -1,0 +1,41 @@
+========================================
+                BYTELIFE
+          DAILY RECONCILIATION
+========================================
+Date                          2026-07-06
+Period                       00:00-23:59
+Machine                     studio.local
+----------------------------------------
+TOKEN ACCOUNT
+  Tokens Payable      Dr           4,200
+  Tokens Receivable   Cr           7,560
+  Cache memo             1.2M w / 3.4M r
+  Exchange rate                 1.80 : 1
+----------------------------------------
+TRAFFIC ACCOUNT
+  Bytes Remitted      Dr          1.5 GB
+  Bytes Received      Cr          4.0 GB
+  Net flow            Cr          2.5 GB
+----------------------------------------
+STORAGE ACCOUNT
+  Writes Posted       Dr        512.0 MB
+  Reads Drawn         Cr          2.0 GB
+  Churn                           2.5 GB
+----------------------------------------
+HOURS UNDER THE LAMP
+  Attention           Dr           06:42
+----------------------------------------
+LABOR ACCOUNT
+  Keys Struck         Dr           8,412
+  Distance Hauled     Dr           300 m
+----------------------------------------
+POSTED BYTE VOLUME                8.0 GB
+========================================
+> Network traffic up 340% versus the
+> trailing average. No judgment. Filing
+> it.
+----------------------------------------
+              * BALANCED *
+----------------------------------------
+Content hash            43e726a4981f22c6
+========================================

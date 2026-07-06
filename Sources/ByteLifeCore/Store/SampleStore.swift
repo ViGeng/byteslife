@@ -18,6 +18,31 @@ public struct AIIngestEvent: Equatable, Sendable {
     }
 }
 
+/// A closed day bound to its immutable receipt. Stored once by `insertReconciliation` and read back
+/// verbatim thereafter; the receipt text is never recomposed.
+public struct Reconciliation: Equatable, Sendable {
+    public let dayEpoch: Int64
+    /// Wall-clock Unix seconds the books were closed.
+    public let closedAt: Int64
+    public let receiptText: String
+    /// SHA-256 over the receipt body, truncated to 16 hex characters.
+    public let contentHash: String
+    /// "BALANCED" or "FLAGGED".
+    public let stamp: String
+    /// The day's single margin comment.
+    public let comment: String
+
+    public init(dayEpoch: Int64, closedAt: Int64, receiptText: String,
+                contentHash: String, stamp: String, comment: String) {
+        self.dayEpoch = dayEpoch
+        self.closedAt = closedAt
+        self.receiptText = receiptText
+        self.contentHash = contentHash
+        self.stamp = stamp
+        self.comment = comment
+    }
+}
+
 /// Durable per-minute accumulator for every metric sample, plus the `meta` key/value store and
 /// the `ai_seen` dedup ledger.
 ///
@@ -231,6 +256,156 @@ public final class SampleStore: @unchecked Sendable {
         }
     }
 
+    /// Sums every minute cell for each day in `days`, grouped by day and kind, in one query. Days and
+    /// kinds absent from the samples are absent from the result rather than zero. Used by the margin
+    /// engine (trailing days) and the General Ledger without a query per day.
+    public func totals(forDayEpochs days: [Int64]) throws -> [Int64: [MetricKind: Int64]] {
+        guard !days.isEmpty else { return [:] }
+        return try queue.sync {
+            let placeholders = Array(repeating: "?", count: days.count).joined(separator: ",")
+            let stmt = try prepare("""
+                SELECT day_epoch, kind, SUM(value) FROM samples
+                WHERE day_epoch IN (\(placeholders))
+                GROUP BY day_epoch, kind;
+                """)
+            defer { sqlite3_finalize(stmt) }
+            for (i, day) in days.enumerated() {
+                sqlite3_bind_int64(stmt, Int32(i + 1), day)
+            }
+            var result: [Int64: [MetricKind: Int64]] = [:]
+            while true {
+                let rc = sqlite3_step(stmt)
+                if rc == SQLITE_ROW {
+                    let day = sqlite3_column_int64(stmt, 0)
+                    guard let raw = sqlite3_column_text(stmt, 1) else { continue }
+                    guard let kind = MetricKind(rawValue: String(cString: raw)) else { continue }
+                    result[day, default: [:]][kind] = sqlite3_column_int64(stmt, 2)
+                } else if rc == SQLITE_DONE {
+                    break
+                } else {
+                    throw SQLiteError.from(db: db, code: rc)
+                }
+            }
+            return result
+        }
+    }
+
+    /// The distinct days that hold any sample, newest first. The General Ledger lists these as the
+    /// candidate accounting periods to review or close.
+    public func dayEpochsWithData() throws -> [Int64] {
+        try queue.sync {
+            let stmt = try prepare("SELECT DISTINCT day_epoch FROM samples ORDER BY day_epoch DESC;")
+            defer { sqlite3_finalize(stmt) }
+            return try collectInt64Column(stmt)
+        }
+    }
+
+    /// Per-kind totals summed across all history, the all-history trial balance shown in the right
+    /// rail. Kinds never recorded are absent from the result.
+    public func trialBalance() throws -> [MetricKind: Int64] {
+        try queue.sync {
+            let stmt = try prepare("SELECT kind, SUM(value) FROM samples GROUP BY kind;")
+            defer { sqlite3_finalize(stmt) }
+            var result: [MetricKind: Int64] = [:]
+            while true {
+                let rc = sqlite3_step(stmt)
+                if rc == SQLITE_ROW {
+                    guard let raw = sqlite3_column_text(stmt, 0) else { continue }
+                    guard let kind = MetricKind(rawValue: String(cString: raw)) else { continue }
+                    result[kind] = sqlite3_column_int64(stmt, 1)
+                } else if rc == SQLITE_DONE {
+                    break
+                } else {
+                    throw SQLiteError.from(db: db, code: rc)
+                }
+            }
+            return result
+        }
+    }
+
+    // MARK: - Reconciliations
+
+    /// Posts a day's immutable receipt. Because `day_epoch` is the primary key, a second attempt on an
+    /// already-posted day inserts nothing and returns `false`, enforcing the "a day closes exactly
+    /// once" rule without an error. Returns `true` when the row was newly written.
+    @discardableResult
+    public func insertReconciliation(_ reconciliation: Reconciliation) throws -> Bool {
+        try queue.sync {
+            let stmt = try prepare("""
+                INSERT OR IGNORE INTO reconciliations
+                    (day_epoch, closed_at, receipt_text, content_hash, stamp, comment)
+                VALUES (?, ?, ?, ?, ?, ?);
+                """)
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, reconciliation.dayEpoch)
+            sqlite3_bind_int64(stmt, 2, reconciliation.closedAt)
+            bindText(stmt, 3, reconciliation.receiptText)
+            bindText(stmt, 4, reconciliation.contentHash)
+            bindText(stmt, 5, reconciliation.stamp)
+            bindText(stmt, 6, reconciliation.comment)
+            let rc = sqlite3_step(stmt)
+            guard rc == SQLITE_DONE else { throw SQLiteError.from(db: db, code: rc) }
+            return sqlite3_changes(db) > 0
+        }
+    }
+
+    /// The stored reconciliation for `dayEpoch`, or nil when the day has not been closed.
+    public func reconciliation(forDayEpoch dayEpoch: Int64) throws -> Reconciliation? {
+        try queue.sync {
+            let stmt = try prepare("""
+                SELECT day_epoch, closed_at, receipt_text, content_hash, stamp, comment
+                FROM reconciliations WHERE day_epoch = ?;
+                """)
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            let rc = sqlite3_step(stmt)
+            if rc == SQLITE_ROW {
+                return Reconciliation(
+                    dayEpoch: sqlite3_column_int64(stmt, 0),
+                    closedAt: sqlite3_column_int64(stmt, 1),
+                    receiptText: columnText(stmt, 2),
+                    contentHash: columnText(stmt, 3),
+                    stamp: columnText(stmt, 4),
+                    comment: columnText(stmt, 5)
+                )
+            } else if rc == SQLITE_DONE {
+                return nil
+            } else {
+                throw SQLiteError.from(db: db, code: rc)
+            }
+        }
+    }
+
+    /// Every posted day's epoch, newest first, for binding the ledger's back-book.
+    public func reconciledDayEpochs() throws -> [Int64] {
+        try queue.sync {
+            let stmt = try prepare("SELECT day_epoch FROM reconciliations ORDER BY day_epoch DESC;")
+            defer { sqlite3_finalize(stmt) }
+            return try collectInt64Column(stmt)
+        }
+    }
+
+    /// Every posted day's stamp keyed by its epoch, so the General Ledger can label its period list in
+    /// one query rather than reading each day's full receipt.
+    public func reconciledStamps() throws -> [Int64: String] {
+        try queue.sync {
+            let stmt = try prepare("SELECT day_epoch, stamp FROM reconciliations;")
+            defer { sqlite3_finalize(stmt) }
+            var result: [Int64: String] = [:]
+            while true {
+                let rc = sqlite3_step(stmt)
+                if rc == SQLITE_ROW {
+                    result[sqlite3_column_int64(stmt, 0)] = columnText(stmt, 1)
+                } else if rc == SQLITE_DONE {
+                    break
+                } else {
+                    throw SQLiteError.from(db: db, code: rc)
+                }
+            }
+            return result
+        }
+    }
+
     // MARK: - Meta
 
     public func metaInt(_ key: String) throws -> Int64? {
@@ -380,5 +555,28 @@ public final class SampleStore: @unchecked Sendable {
 
     private func bindText(_ stmt: OpaquePointer, _ index: Int32, _ value: String) {
         sqlite3_bind_text(stmt, index, value, -1, SQLITE_TRANSIENT)
+    }
+
+    /// Reads a TEXT column, treating SQL NULL as the empty string. The reconciliation columns are all
+    /// declared NOT NULL, so NULL never actually occurs here.
+    private func columnText(_ stmt: OpaquePointer, _ index: Int32) -> String {
+        guard let raw = sqlite3_column_text(stmt, index) else { return "" }
+        return String(cString: raw)
+    }
+
+    /// Drains a single-column INTEGER result set into an array. Assumes it runs on `queue`.
+    private func collectInt64Column(_ stmt: OpaquePointer) throws -> [Int64] {
+        var values: [Int64] = []
+        while true {
+            let rc = sqlite3_step(stmt)
+            if rc == SQLITE_ROW {
+                values.append(sqlite3_column_int64(stmt, 0))
+            } else if rc == SQLITE_DONE {
+                break
+            } else {
+                throw SQLiteError.from(db: db, code: rc)
+            }
+        }
+        return values
     }
 }

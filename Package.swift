@@ -19,7 +19,9 @@ let package = Package(
             name: "ByteLifeCoreTests",
             dependencies: ["ByteLifeCore"],
             resources: [.copy("Fixtures")],
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v5)],
+            // Linked so the migration test can build a raw v1-schema database directly.
+            linkerSettings: [.linkedLibrary("sqlite3")]
         ),
     ]
 )

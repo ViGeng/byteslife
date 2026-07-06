@@ -1,31 +1,93 @@
 import Foundation
 import Combine
+import SwiftUI
 import ByteLifeCore
 
-/// One family's line in the panel: its name, a formatted primary value, an optional secondary detail
-/// (cache tokens for AI), and its current availability for the badge.
-struct FamilyRow: Identifiable {
-    let family: MetricFamily
-    let value: String
-    let detail: String?
-    let availability: Availability
-    var id: MetricFamily { family }
-}
-
-/// Drives the menubar panel. A ~2s timer polls today's totals from the store and the registry's
-/// availability snapshot, then republishes one `FamilyRow` per family. Kept on the main actor because
-/// it feeds SwiftUI directly.
+/// Drives the Ledger menubar panel. A timer polls today's totals and the registry's availability
+/// snapshot, reshapes them into a `DaySheet` via the core domain layer, and republishes it along with
+/// the menubar running-balance figure and the launch-at-login state. Kept on the main actor and
+/// poll-driven because it feeds SwiftUI directly; all figure and column logic lives in ByteLifeCore's
+/// `DaySheet`, so this stays a thin publisher.
+///
+/// The poll runs at two cadences: a slow idle tick that only keeps the menubar balance fresh while the
+/// panel is closed, and a fast tick while the panel is open so the figures climb live. Opening the
+/// panel refreshes immediately, and refreshes while the panel is visible are wrapped in an animation so
+/// the monospaced figures roll to their new values (the split-flap tick the concept sheet asks for).
 @MainActor
 final class DashboardViewModel: ObservableObject {
-    @Published private(set) var rows: [FamilyRow] = []
+    /// The five accounts, their columns, the running balance, and whether today is posted.
+    @Published private(set) var daySheet: DaySheet
+    /// Today's posted byte volume, shown next to the glyph in the menubar itself.
+    @Published private(set) var menubarBalance: String
+    /// Today's stored receipt once the day is closed, so the panel can render the immutable strip on
+    /// posting and again whenever the user reopens it. Nil while the day is still open.
+    @Published private(set) var todaysReceipt: Reconciliation?
+    /// Whether ByteLife is currently registered to launch at login.
+    @Published private(set) var launchAtLoginEnabled: Bool
+    /// False once a register/unregister attempt failed (typically under `swift run`), so the footer can
+    /// disclose that the toggle is unavailable rather than silently doing nothing.
+    @Published private(set) var launchAtLoginAvailable: Bool = true
+
+    private static let openInterval: TimeInterval = 2
+    private static let idleInterval: TimeInterval = 30
 
     private let coordinator: AppCoordinator
     private var timer: Timer?
+    private var panelVisible = false
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
+        let initial = DaySheet.build(totals: [:], availabilityByFamily: [:], reconciliation: nil)
+        self.daySheet = initial
+        self.menubarBalance = initial.postedByteVolume
+        self.todaysReceipt = nil
+        self.launchAtLoginEnabled = coordinator.isLaunchAtLoginEnabled
         refresh()
-        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+        startTimer(interval: Self.idleInterval)
+    }
+
+    deinit { timer?.invalidate() }
+
+    /// The panel opened: fetch fresh figures immediately (animated, so stale values roll up to
+    /// current), re-read the login-item status, and switch to the fast cadence for live ticking.
+    func panelDidAppear() {
+        panelVisible = true
+        launchAtLoginEnabled = coordinator.isLaunchAtLoginEnabled
+        refresh()
+        startTimer(interval: Self.openInterval)
+    }
+
+    /// The panel closed: drop back to the slow cadence that only keeps the menubar balance fresh.
+    func panelDidDisappear() {
+        panelVisible = false
+        startTimer(interval: Self.idleInterval)
+    }
+
+    /// Raises the Input Monitoring prompt. The panel calls this from the needs-permission affordance.
+    func requestInputPermission() {
+        coordinator.inputCollector.requestPermission()
+    }
+
+    /// Closes today's books, then refreshes so the panel flips to its posted state and shows the stamp.
+    /// Returns whether a receipt is now on file (freshly posted or already closed), so the panel can
+    /// present the strip.
+    @discardableResult
+    func reconcileToday() -> Bool {
+        coordinator.reconcileToday()
+        refresh()
+        return todaysReceipt != nil
+    }
+
+    /// Toggles the login item and reflects the outcome, disclosing unavailability when the OS refuses.
+    func toggleLaunchAtLogin() {
+        let succeeded = coordinator.setLaunchAtLogin(!launchAtLoginEnabled)
+        launchAtLoginAvailable = succeeded
+        launchAtLoginEnabled = coordinator.isLaunchAtLoginEnabled
+    }
+
+    private func startTimer(interval: TimeInterval) {
+        timer?.invalidate()
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
         // .common so polling keeps running while the menubar panel tracks a mouse or menu interaction.
@@ -33,53 +95,32 @@ final class DashboardViewModel: ObservableObject {
         self.timer = timer
     }
 
-    deinit { timer?.invalidate() }
-
-    /// Raises the Input Monitoring prompt. The panel calls this from the needs-permission affordance.
-    func requestInputPermission() {
-        coordinator.inputCollector.requestPermission()
-    }
-
     private func refresh() {
         let dayEpoch = DayBucket.dayEpoch(for: Date())
         let totals = (try? coordinator.store.totals(forDayEpoch: dayEpoch)) ?? [:]
+        let reconciliation = (try? coordinator.store.reconciliation(forDayEpoch: dayEpoch)) ?? nil
 
         var availabilityByFamily: [MetricFamily: Availability] = [:]
         for entry in coordinator.registry.availabilitySnapshot() {
             availabilityByFamily[entry.family] = entry.availability
         }
 
-        rows = MetricFamily.allCases.map { family in
-            FamilyRow(
-                family: family,
-                value: Self.value(for: family, totals: totals),
-                detail: Self.detail(for: family, totals: totals),
-                availability: availabilityByFamily[family] ?? .disabled
-            )
-        }
-    }
+        let sheet = DaySheet.build(
+            totals: totals,
+            availabilityByFamily: availabilityByFamily,
+            reconciliation: reconciliation
+        )
 
-    private static func value(for family: MetricFamily, totals: [MetricKind: Int64]) -> String {
-        func total(_ kind: MetricKind) -> Int64 { totals[kind] ?? 0 }
-        switch family {
-        case .network:
-            return "↓ \(ByteFormatting.bytes(total(.networkBytesIn)))   ↑ \(ByteFormatting.bytes(total(.networkBytesOut)))"
-        case .disk:
-            return "R \(ByteFormatting.bytes(total(.diskBytesRead)))   W \(ByteFormatting.bytes(total(.diskBytesWritten)))"
-        case .ai:
-            return "\(ByteFormatting.tokens(total(.aiInputTokens))) in   \(ByteFormatting.tokens(total(.aiOutputTokens))) out"
-        case .screen:
-            return ByteFormatting.duration(seconds: total(.screenAttentiveSeconds))
-        case .input:
-            return "\(ByteFormatting.tokens(total(.inputKeystrokes))) keys   \(ByteFormatting.pixelDistance(milliPixels: total(.inputMouseMilliPixels)))"
+        let apply = {
+            self.daySheet = sheet
+            self.menubarBalance = sheet.postedByteVolume
+            self.todaysReceipt = reconciliation
         }
-    }
-
-    private static func detail(for family: MetricFamily, totals: [MetricKind: Int64]) -> String? {
-        guard family == .ai else { return nil }
-        let created = totals[.aiCacheCreationTokens] ?? 0
-        let read = totals[.aiCacheReadTokens] ?? 0
-        guard created > 0 || read > 0 else { return nil }
-        return "cache \(ByteFormatting.tokens(created)) write / \(ByteFormatting.tokens(read)) read"
+        if panelVisible {
+            // Figures roll to their new values via the views' numeric content transitions.
+            withAnimation(.easeOut(duration: 0.5), apply)
+        } else {
+            apply()
+        }
     }
 }

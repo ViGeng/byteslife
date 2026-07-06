@@ -80,3 +80,30 @@ Only on the dev Mac with a full GUI session and the packaged .app: the Input Mon
 
 - `import SQLite3` under a CLT-only toolchain is high confidence but must be confirmed in step 1. The fallback is a tiny system-library module map target, still with zero external dependencies.
 - Secure Input undercounts keystrokes by OS design. Network counters are quantized for third-party readers on some macOS versions. Day boundaries are naive local midnight in v1, with no special timezone or DST handling.
+
+---
+
+# Iteration 3: the Ledger experience
+
+Status: executed 2026-07-07 (see CHANGELOG.md, iteration 3). Deviations recorded after execution: a third receipt stamp, POSTED IN ARREARS, was added beyond the concept sheet's two, because closing a past day from the General Ledger cannot honestly print BALANCED or FLAGGED when collector availability for that period was not retained; the arrears receipt discloses this instead. The panel gained the dynamic behavior requested during the iteration: it refreshes the moment it opens, figures roll to new values with a numeric transition (the concept's split-flap tick), polling runs at two seconds while the panel is open, and drops to thirty seconds when closed. Brass gold is gated strictly to BALANCED in every surface. Multi-device and agentless SSH collection were designed (not built) in [docs/design/multi-device.md](docs/design/multi-device.md). The authoritative creative spec is the "Double-Entry Self" concept sheet in [docs/research/concepts.md](docs/research/concepts.md) (lines 85-103) plus the grafts listed in README.md. This iteration applies the Ledger skin, the Reconcile ritual with the receipt artifact, and the General Ledger window.
+
+## Decisions
+
+- Accounts and sides follow the concept sheet's VOCAB exactly. The rule is: what flows out of you posts as a debit, what comes back posts as a credit. Token Account books Tokens Payable (prompted, debit; aiInputTokens + both cache-creation and cache-read booked as a separate memo line, see below) against Tokens Receivable (generated, credit; aiOutputTokens), with a generated-to-prompted "exchange rate" footnote. Traffic Account books Bytes Remitted (sent, debit) against Bytes Received (credit). Storage Account books Writes Posted (debit) against Reads Drawn (credit) plus a derived churn line. Hours Under the Lamp is a single-debit expense account in HH:MM. The Labor Account is an expense account with Keys Struck (count) and Distance Hauled (mouse travel in meters).
+- Cache tokens are not silently summed into Tokens Payable, because cache reads dwarf real prompting by orders of magnitude and would destroy the exchange-rate footnote's meaning. The account body shows prompted vs generated; a small memo line reports cache traffic separately and honestly.
+- Mouse milli-pixels convert to meters at an assumed 220 pixels per inch (Retina-class), recorded as an assumption in code.
+- The menubar shows a glyph plus today's running balance, defined as the day's posted byte volume: the sum of Traffic and Storage debits and credits. Tokens, hours, and labor keep their own units and never fold into that figure.
+- Palette per the concept sheet: paper #F4F1E9 (light) / ink-navy #141A24 (dark), debit oxblood #9B3B2F, credit ledger-green #3B6B4A, balance ink #1C1C1A, hairline pencil-gray #C9C2B2, brass gold #B58A3C reserved exclusively for the BALANCED stamp. Figures use the system monospaced font with tabular numerals; bundling IBM Plex Mono is deferred.
+- Reconciliation: schema v2 adds `reconciliations(day_epoch INTEGER PRIMARY KEY, closed_at INTEGER, receipt_text TEXT, content_hash TEXT, stamp TEXT, comment TEXT)`. The receipt text is composed once, stored verbatim as the immutable artifact, and re-rendered from storage ever after. The content hash is SHA-256 (CryptoKit) over the canonical receipt body, printed truncated to 16 hex characters in the footer. The stamp is BALANCED when every collector reported .running at close, else FLAGGED with a plain note naming the short account(s). A day can be reconciled exactly once; past unposted days can be posted from the General Ledger window.
+- The margin comment comes from a deterministic local rule engine (no AI dependency): rules compare the day against the trailing seven recorded days (largest account by churn, variance beyond a threshold, generated-vs-typed firsts, quiet days), each rule yields a dry bookkeeper sentence, the highest-priority applicable rule wins, and ties break deterministically. This same engine is the Dispatch graft.
+- The General Ledger window is a document-style window: left rail with the five accounts, center column listing recorded days newest-first with their stamp state, day detail showing the stored receipt strip for posted days or a day sheet with a Close-the-books action for unposted ones, right rail with the all-history trial balance.
+- Panel footer gains a launch-at-login toggle (SMAppService) and the existing Quit; version bumps to 0.2.0.
+- Deferred to later iterations: the weekly Statement, the Annual Report, desktop widgets, the screensaver, per-account calibration and budget lines, and bundling IBM Plex Mono.
+
+## Migration caution
+
+The live database on this machine already holds v1 data (29 days of AI backfill plus live counters). The v2 migration must be additive only and must be proven against a copy of a populated v1 store in tests.
+
+## Verification
+
+`swift build`, `swift build -c release`, and `swift test` green; the packaged app relaunches against the existing live store, migrates it to v2, renders the Ledger panel, and can close today's books producing a stored, hash-stamped receipt.

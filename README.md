@@ -2,7 +2,7 @@
 
 ByteLife is a native macOS app that tracks the digital side of a person's existence, centered on the concept of bytes. It aggregates AI token usage, network traffic, disk activity, screen time, and physical input into one dashboard of digital life.
 
-The v1 scaffold is implemented and running: a menubar app with five working collectors, a SQLite store with minute-level rollups, and a deliberately plain panel UI. The Ledger visual direction described below is the next layer and has not been applied yet. The concept brief and the research under docs/ remain the design ground truth.
+Version 0.2.0 is implemented and running: a menubar app with five working collectors, a SQLite store with minute-level rollups, and the Ledger experience applied on top. The menubar shows today's running balance, the dropdown is the live day sheet with debit and credit columns in the ledger palette, the Reconcile ritual closes the day into an immutable hash-stamped receipt, and the General Ledger window holds the posted history and the trial balance. The concept brief below and the research under docs/ remain the design ground truth.
 
 ## Premise
 
@@ -69,11 +69,15 @@ The key facts from the research, detailed in [docs/research/feasibility.md](docs
 
 ## Version 1 scope
 
-- A menubar extra shows today's running balance and drops down a five-account day sheet. (Implemented as a plain panel; the Ledger skin comes later.)
-- A General Ledger window holds the posted history and the trial balance. (Not yet built.)
-- The nightly Reconcile ritual produces the daily receipt, and a weekly Statement rolls seven days up. (Not yet built.)
+- A menubar extra shows today's running balance and drops down a five-account day sheet. (Implemented, in the Ledger skin, with live rolling figures while the panel is open.)
+- A General Ledger window holds the posted history and the trial balance. (Implemented.)
+- The nightly Reconcile ritual produces the daily receipt. (Implemented: BALANCED in brass, FLAGGED with the short accounts named, or POSTED IN ARREARS for a past day closed late.) The weekly Statement is not yet built.
 - Data collectors cover the five families listed in the feasibility table. (Implemented.)
 - Version 1 deliberately omits cloud sync, accounts, goals, streaks, social features, per-app network attribution, and any iOS companion.
+
+## Beyond one Mac (designed, not yet built)
+
+[docs/design/multi-device.md](docs/design/multi-device.md) records the multi-device direction: every machine is a holding with a stable identity, device-own metrics merge additively across holdings, shared sources attribute to the source rather than the observer, and remote servers are collected agentlessly over existing SSH access with nothing installed on the remote side.
 
 ## Building and running
 
@@ -90,6 +94,7 @@ On first launch, four collectors run immediately with no permission prompts. Inp
 - [Sources/ByteLifeApp/](Sources/ByteLifeApp/) is the thin menubar app shell.
 - [Tests/ByteLifeCoreTests/](Tests/ByteLifeCoreTests/) holds the test suite and the hand-authored transcript fixtures.
 - [scripts/package-app.sh](scripts/package-app.sh) assembles and ad-hoc-signs `dist/ByteLife.app`.
+- [docs/design/](docs/design/) holds forward design notes, currently the multi-device and remote-source design.
 - [docs/research/](docs/research/) holds the raw output of the 2026-07-04 concept workflow: feasibility research, the landscape scan, the five concept sheets, and the judge panel results.
 
 ## Decisions so far (2026-07-04)
@@ -100,6 +105,7 @@ On first launch, four collectors run immediately with no permission prompts. Inp
 
 ## Open questions
 
-- Which creative direction to commit to. The Ledger is recommended, with Symbiont as the bold alternative, and the core can be built skin-agnostic in the meantime.
 - The final app name. Current candidates in the Ledger direction include Reconcile, Bytekeeping, Nightaudit, and The Standing Ledger, with ByteLife still viable as the umbrella brand.
 - Whether version 1 targets personal use or a public release from day one.
+
+The creative direction question is settled: the Ledger was committed to and applied in iteration 3.

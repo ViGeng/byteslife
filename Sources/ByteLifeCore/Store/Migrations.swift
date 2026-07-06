@@ -16,12 +16,16 @@ func execSQL(_ db: OpaquePointer, _ sql: String) throws {
 /// up-to-date database is a no-op because the version already matches.
 enum Migrations {
     /// Schema version this build targets. Bump alongside a new `applyVN` step.
-    static let currentVersion: Int32 = 1
+    static let currentVersion: Int32 = 2
 
     static func migrate(_ db: OpaquePointer) throws {
         if try userVersion(db) < 1 {
             try applyV1(db)
             try setUserVersion(db, 1)
+        }
+        if try userVersion(db) < 2 {
+            try applyV2(db)
+            try setUserVersion(db, 2)
         }
     }
 
@@ -46,6 +50,22 @@ enum Migrations {
             CREATE TABLE IF NOT EXISTS ai_seen (
                 dedup_key TEXT PRIMARY KEY,
                 day_epoch INTEGER NOT NULL
+            );
+            """)
+    }
+
+    /// Additive step for the Ledger's Reconcile ritual: a `reconciliations` table binding each closed
+    /// day to its immutable receipt. `day_epoch` is the primary key, so a day can be posted exactly
+    /// once. Purely additive, leaving every v1 table and row untouched.
+    private static func applyV2(_ db: OpaquePointer) throws {
+        try execSQL(db, """
+            CREATE TABLE IF NOT EXISTS reconciliations (
+                day_epoch    INTEGER PRIMARY KEY,
+                closed_at    INTEGER NOT NULL,
+                receipt_text TEXT    NOT NULL,
+                content_hash TEXT    NOT NULL,
+                stamp        TEXT    NOT NULL,
+                comment      TEXT    NOT NULL
             );
             """)
     }
