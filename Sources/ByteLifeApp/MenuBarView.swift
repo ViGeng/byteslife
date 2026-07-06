@@ -46,7 +46,7 @@ struct MenuBarView: View {
                 daySheetPanel
             }
         }
-        .frame(width: 320)
+        .frame(width: 340, alignment: .leading)
         .background(LedgerPalette.surface(scheme))
         .foregroundStyle(ink)
         // The panel polls fast and animates while open, slow and label-only while closed.
@@ -151,16 +151,24 @@ struct MenuBarView: View {
 
         if let disclosure = account.disclosure {
             GridRow {
+                // Spanning rows must never drive the grid's width: unsized on the horizontal axis so
+                // long disclosures wrap inside the column-derived width instead of forcing the panel
+                // wider than its frame (which SwiftUI resolves by clipping both edges).
                 Text(disclosure)
                     .font(.system(.caption2, design: .monospaced).italic())
                     .foregroundStyle(LedgerPalette.pencil)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .gridCellColumns(3)
+                    .gridCellUnsizedAxes(.horizontal)
             }
         }
 
         if account.availability == .needsPermission {
             GridRow {
-                permissionAffordance.gridCellColumns(3)
+                permissionAffordance
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .gridCellColumns(3)
+                    .gridCellUnsizedAxes(.horizontal)
             }
         }
 
@@ -181,7 +189,6 @@ struct MenuBarView: View {
                 .font(.system(.caption2, design: .monospaced))
         }
         .menuStyle(.borderlessButton)
-        .fixedSize()
         .foregroundStyle(LedgerPalette.debit)
     }
 
