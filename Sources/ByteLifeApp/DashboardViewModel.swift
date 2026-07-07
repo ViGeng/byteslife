@@ -157,18 +157,39 @@ final class DashboardViewModel: ObservableObject {
         startTimer(interval: Self.idleInterval, publishMeter: false, animated: false)
     }
 
+    /// The home for blocking permission work: the request is an XPC round trip to tccd that can take
+    /// seconds, and the reset additionally spawns tccutil and waits for it. Running either inline
+    /// beachballed the panel on 0.8.0, and a cooperative-pool thread is the wrong place to park a
+    /// blocking syscall. A SERIAL queue also means a double-clicked affordance runs its flows one after
+    /// the other instead of racing two prompts.
+    private static let permissionQueue = DispatchQueue(label: "life.byte.permission", qos: .userInitiated)
+
     /// Raises the Input Monitoring prompt. The panel calls this from the needs-permission affordance. When
     /// the request returns with the grant still absent — macOS suppresses the repeat prompt after the
-    /// first decision — this sets `inputPromptSuppressed` so the panel reveals the reset affordance.
+    /// first decision — this sets `inputPromptSuppressed` so the panel reveals the reset affordance. The
+    /// blocking request runs on `permissionQueue`; only the published outcome hops back to the main actor.
     func requestInputPermission() {
-        inputPromptSuppressed = coordinator.inputCollector.requestPermission() == .promptSuppressed
+        let collector = coordinator.inputCollector
+        Self.permissionQueue.async { [weak self] in
+            let outcome = collector.requestPermission()
+            Task { @MainActor [weak self] in
+                self?.inputPromptSuppressed = outcome == .promptSuppressed
+            }
+        }
     }
 
     /// Runs the TCC reset recovery from the panel. Returns tccutil's nonzero exit code on failure, so the
     /// panel can surface an honest alert, or nil on success, where the prompt has been re-raised and the
-    /// suppressed flag clears.
-    func resetInputPermission() -> Int32? {
-        switch coordinator.inputCollector.resetPermissionState() {
+    /// suppressed flag clears. The blocking flow (tccutil, then the re-raised prompt request) runs on
+    /// `permissionQueue`; the await suspends the main actor without blocking it.
+    func resetInputPermission() async -> Int32? {
+        let collector = coordinator.inputCollector
+        let outcome = await withCheckedContinuation { continuation in
+            Self.permissionQueue.async {
+                continuation.resume(returning: collector.resetPermissionState())
+            }
+        }
+        switch outcome {
         case .reprompted:
             inputPromptSuppressed = false
             return nil

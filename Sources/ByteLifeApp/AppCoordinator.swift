@@ -83,8 +83,18 @@ final class AppCoordinator {
         ])
 
         reconciler = Reconciler(store: store)
-        registry.startAll()
-        auxiliaryRegistry.startAll()
+        // Collector start-up does real I/O — the AI sources stat (and on first run, tail) every recent
+        // transcript during discovery — so it must not run on the main thread, where it stalls the
+        // app's first frames. Every collector is internally thread-safe and none needs a main run loop
+        // (the input tap spins its own dedicated thread), so both registries start in the background.
+        // The first panel render reads the collectors' honest initial availability and self-corrects
+        // on the next poll.
+        let flagship = registry
+        let auxiliary = auxiliaryRegistry
+        DispatchQueue.global(qos: .utility).async {
+            flagship.startAll()
+            auxiliary.startAll()
+        }
     }
 
     /// Closes today's books, posting the receipt exactly once. Returns the stored reconciliation, or

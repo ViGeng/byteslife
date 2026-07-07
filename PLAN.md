@@ -276,13 +276,33 @@ Status: executed 2026-07-07 (see CHANGELOG.md, iteration 9), version 0.8.0 shipp
 
 Founder direction: improve efficiency and token-efficiency, and re-order the backlog more reasonably. Three rules now shape the queue. First, an iteration stays inside one subsystem cluster, so a build touches a coherent file set instead of re-reading the whole tree. Second, an iteration carries at most one schema migration. Third, verification effort scales with risk: money math and privacy-sensitive parsing earn adversarial review, while mechanical UI rides on the test suite plus one focused review pass. Orchestration follows the same discipline — small builder crews on disjoint file sets, resume instead of rerun on failures, and the strongest reviewers reserved for the riskiest pieces.
 
+Founder halt, evening of 2026-07-07: feature iterations paused after 0.8.0 crashed repeatedly under real use. Stability comes first; the stabilization entry below records the findings. Iterations 10 to 12 stay designed and queued, resuming only on the founder's word.
+
 The order, each step gated on the previous ship:
 
 1. Iteration 9 (shipped 2026-07-07, 0.8.0): sensors, true energy, permission self-recovery, fine-grained AI (schema v4), the WORK window, shell commands.
+1a. Stabilization (0.8.1, executed the same evening): the Bluetooth TCC kill, the beachballing permission flow, and the blocking launch — see "Stabilization" below.
 2. Iteration 10 (0.9.0, honest numbers, no migration): the realtime token meter, the notional AI cost, and the Composite. All three only read what v4 already records, so this is the highest founder-visible value per line changed.
 3. Iteration 11 (0.10.0, the deeper record, schema v5): the Workshop (git) and the Journal in one migration, plus the working-hours strip as the first journal-powered insight.
 4. Iteration 12 (0.11.0, beyond the machine, schema v6): the Engagement Book (calendar) before the Correspondence account (email), ordered by permission friction.
 5. The standing backlog behind those: the weekly Statement, multi-device holdings and agentless SSH collection, the app rename, and face-distance sensing as noted future work.
+
+---
+
+# Stabilization (2026-07-07 evening): the Bluetooth kill and the frozen main thread
+
+Status: executed 2026-07-07, version 0.8.1. Founder report on 0.8.0: frequent crashes while clicking around, and the Grant Permission button responded slowly before the app died. Diagnosed from the five crash reports in DiagnosticReports, all carrying one signature.
+
+## Findings and fixes
+
+- THE CRASH (all five reports): a TCC privacy kill. Iteration 9's BluetoothCollector called `IOBluetoothDevice.pairedDevices()` on its 30-second tick, Bluetooth enumeration is TCC-protected, and the packaged Info.plist carried no `NSBluetoothAlwaysUsageDescription`, which macOS punishes with SIGABRT. The app could not survive a minute. Two-layer fix: the usage description is now in the packaged Info.plist, and the collector gates every tick on `CBCentralManager.authorization == .allowedAlways` (a read-only, non-prompting check) so an unauthorized process can never reach IOBluetooth, plist or no plist. Unauthorized ticks book `.needsPermission` honestly. The app still never raises the Bluetooth prompt on its own, so the family stays dormant until a future iteration adds an explicit enable affordance; that affordance is now queued work.
+- THE BEACHBALL: the panel's Grant Permission and Reset-permission-state actions ran a blocking XPC round trip (`CGRequestListenEventAccess`) and a synchronous `Process` (`tccutil`) + a second blocking request on the main actor. Both flows now run detached off the main actor and only publish their outcome back on it; the reset button awaits its exit code asynchronously.
+- THE SLOW LAUNCH: both collector registries started synchronously inside the coordinator's init on the main thread, and the AI sources stat every recent transcript (and on first run, tail them all) during discovery. Start-up now runs on a background queue; an audit confirmed no collector needs a main run loop (the event tap spins its own dedicated CFRunLoop thread, FSEvents and CoreAudio use dispatch queues, IOKit sensors poll their own serial queues).
+- Sweep results: no other TCC-protected framework is touched anywhere in Sources, and the only other `Process` user (nettop in HostsSeenCollector) already ran on its own queue.
+
+## Verification
+
+`swift build` and `swift test` green (386 tests, including the new fail-closed gate regression: an unauthorized tick must never reach the reader); a soak run confirms the packaged app outlives the old 30-to-60-second crash window with no new crash reports; one adversarial review of the diff.
 
 ---
 

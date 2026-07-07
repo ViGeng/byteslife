@@ -425,8 +425,12 @@ struct MeterBridgeView: View {
                     // surfaces an alert if tccutil itself fails.
                     if viewModel.inputPromptSuppressed {
                         Button("Reset permission state…") {
-                            if let exitCode = viewModel.resetInputPermission() {
-                                PermissionsHint.presentResetFailure(exitCode: exitCode)
+                            // The reset runs off the main actor (tccutil + a blocking prompt request);
+                            // only the failure alert lands back here.
+                            Task {
+                                if let exitCode = await viewModel.resetInputPermission() {
+                                    PermissionsHint.presentResetFailure(exitCode: exitCode)
+                                }
                             }
                         }
                     }

@@ -45,9 +45,11 @@ cat > "${CONTENTS}/Info.plist" <<'PLIST'
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.8.0</string>
+    <string>0.8.1</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>ByteLife counts how many Bluetooth peripherals connect during the day. It never reads device names, addresses, or any data they carry.</string>
 </dict>
 </plist>
 PLIST
