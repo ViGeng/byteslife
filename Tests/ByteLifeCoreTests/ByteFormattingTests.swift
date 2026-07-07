@@ -65,4 +65,33 @@ final class ByteFormattingTests: XCTestCase {
         XCTAssertEqual(ByteFormatting.pixelDistance(milliPixels: 1_500_000), "1.5K px")
         XCTAssertEqual(ByteFormatting.pixelDistance(milliPixels: 2_500_000_000), "2.5M px")
     }
+
+    // MARK: meter rate readouts
+
+    func testByteRate() {
+        XCTAssertEqual(ByteFormatting.byteRate(0), "0 B/s")
+        XCTAssertEqual(ByteFormatting.byteRate(500), "500 B/s")
+        XCTAssertEqual(ByteFormatting.byteRate(1_500), "1.5 KB/s")
+        XCTAssertEqual(ByteFormatting.byteRate(2_202_010), "2.1 MB/s")
+        // A negative rate can never arise (deltas are clamped) but must not crash the ladder.
+        XCTAssertEqual(ByteFormatting.byteRate(-5), "0 B/s")
+    }
+
+    func testTokenRate() {
+        XCTAssertEqual(ByteFormatting.tokenRate(0), "0 tok/min")
+        XCTAssertEqual(ByteFormatting.tokenRate(312), "312 tok/min")
+        XCTAssertEqual(ByteFormatting.tokenRate(1_500), "1.5K tok/min")
+    }
+
+    func testKeyRate() {
+        XCTAssertEqual(ByteFormatting.keyRate(0), "0 kpm")
+        XCTAssertEqual(ByteFormatting.keyRate(42), "42 kpm")
+        XCTAssertEqual(ByteFormatting.keyRate(311.6), "312 kpm")
+    }
+
+    func testHexTickerFormatting() {
+        XCTAssertEqual(ByteFormatting.hex(0), "0x0")
+        XCTAssertEqual(ByteFormatting.hex(128_162), "0x1F4A2")
+        XCTAssertEqual(ByteFormatting.hex(-5), "0x0")
+    }
 }

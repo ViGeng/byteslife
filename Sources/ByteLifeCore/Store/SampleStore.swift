@@ -323,6 +323,96 @@ public final class SampleStore: @unchecked Sendable {
         }
     }
 
+    /// A single minute cell's storage coordinates, used to line the fetched rows back up with the
+    /// requested window positions regardless of how many days the window spans.
+    private struct MinuteCoord: Hashable {
+        let dayEpoch: Int64
+        let minute: Int32
+    }
+
+    /// The last `count` completed minute buckets for each requested kind, oldest first, ending at the
+    /// minute just before `reference`. The reference's own (still in-progress) minute is excluded, so a
+    /// bucket only appears once it is finished. Empty minutes read as zero, and the window crosses local
+    /// midnight correctly because every target minute is resolved through `DayBucket`, exactly like the
+    /// write path. Runs one indexed range query per distinct day the window touches (one or two for a
+    /// normal window), never a full-table scan.
+    public func minuteSeries(
+        kinds: [MetricKind],
+        count: Int,
+        endingBefore reference: Date = Date(),
+        calendar: Calendar = .current
+    ) throws -> [MetricKind: [Int64]] {
+        guard count > 0, !kinds.isEmpty else {
+            return Dictionary(uniqueKeysWithValues: kinds.map { ($0, [Int64]()) })
+        }
+
+        // Walk back one wall-clock minute at a time from the start of the reference's (in-progress)
+        // minute, bucketing each step through `DayBucket` so the day boundary is handled identically to
+        // the write path. `targets` ends up oldest-first: index 0 is the furthest-back minute.
+        let refMinuteStart = (reference.timeIntervalSince1970 / 60).rounded(.down) * 60
+        var targets: [MinuteCoord] = []
+        targets.reserveCapacity(count)
+        for i in 0..<count {
+            let stepsBack = count - i
+            let date = Date(timeIntervalSince1970: refMinuteStart - Double(stepsBack) * 60)
+            let bucket = DayBucket(date: date, calendar: calendar)
+            targets.append(MinuteCoord(dayEpoch: bucket.dayEpoch, minute: bucket.minute))
+        }
+
+        // Group the targets by day so each day is fetched with one indexed range query over its
+        // contiguous minute span rather than a scan.
+        var spanByDay: [Int64: (lo: Int32, hi: Int32)] = [:]
+        for target in targets {
+            if let span = spanByDay[target.dayEpoch] {
+                spanByDay[target.dayEpoch] = (Swift.min(span.lo, target.minute),
+                                              Swift.max(span.hi, target.minute))
+            } else {
+                spanByDay[target.dayEpoch] = (target.minute, target.minute)
+            }
+        }
+
+        return try queue.sync {
+            let placeholders = Array(repeating: "?", count: kinds.count).joined(separator: ",")
+            let stmt = try prepare("""
+                SELECT minute, kind, value FROM samples
+                WHERE day_epoch = ? AND minute BETWEEN ? AND ? AND kind IN (\(placeholders));
+                """)
+            defer { sqlite3_finalize(stmt) }
+
+            var fetched: [MinuteCoord: [MetricKind: Int64]] = [:]
+            for (day, span) in spanByDay {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                sqlite3_bind_int64(stmt, 1, day)
+                sqlite3_bind_int(stmt, 2, span.lo)
+                sqlite3_bind_int(stmt, 3, span.hi)
+                for (i, kind) in kinds.enumerated() {
+                    bindText(stmt, Int32(4 + i), kind.rawValue)
+                }
+                while true {
+                    let rc = sqlite3_step(stmt)
+                    if rc == SQLITE_ROW {
+                        let minute = sqlite3_column_int(stmt, 0)
+                        guard let raw = sqlite3_column_text(stmt, 1) else { continue }
+                        guard let kind = MetricKind(rawValue: String(cString: raw)) else { continue }
+                        let coord = MinuteCoord(dayEpoch: day, minute: minute)
+                        fetched[coord, default: [:]][kind] = sqlite3_column_int64(stmt, 2)
+                    } else if rc == SQLITE_DONE {
+                        break
+                    } else {
+                        throw SQLiteError.from(db: db, code: rc)
+                    }
+                }
+            }
+
+            var result: [MetricKind: [Int64]] = [:]
+            for kind in kinds {
+                result[kind] = targets.map { fetched[$0]?[kind] ?? 0 }
+            }
+            return result
+        }
+    }
+
     // MARK: - Reconciliations
 
     /// Posts a day's immutable receipt. Because `day_epoch` is the primary key, a second attempt on an

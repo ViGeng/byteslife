@@ -104,6 +104,42 @@ Status: executed 2026-07-07 (see CHANGELOG.md, iteration 3). Deviations recorded
 
 The live database on this machine already holds v1 data (29 days of AI backfill plus live counters). The v2 migration must be additive only and must be proven against a copy of a populated v1 store in tests.
 
+---
+
+# Iteration 4: the live dashboard panel
+
+Status: executed 2026-07-07, through three design passes driven by founder feedback: first the Instrument meter bridge ("dashboard like"), then a byte-native cell-lattice direction ("fancy, more bytes themed"), and finally the shipped chart-led Byte Flow deck ("some charts / visual elements"). The Ledger stays underneath as the record layer throughout: Reconcile, the paper receipt strip, and the General Ledger window are unchanged — the panel reads live, the books keep the record. The channel semantics come from the Instrument concept sheet in [docs/research/concepts.md](docs/research/concepts.md) (lines 25-43); the shipped visual design is the Byte Flow deck below.
+
+## Decisions
+
+- Channels per the Instrument VOCAB: TRAFFIC (bytes/s), STORAGE (bytes/s), COGNITION (tokens/min), EXPOSURE (accumulating attentive time, not a rate), MECHANICS (keystrokes/min plus the distance odometer). Each channel shows a drawn segment-bar meter of recent history, a live rate readout, a small sub-line with today's directional totals, and a peak-hold mark.
+- Live rates come from successive view-model polls: the panel already fetches today's totals every 2 seconds while open, so rate = delta between snapshots over elapsed time, smoothed with a light exponential moving average. No collector or store-write changes.
+- History bars read the store's existing minute buckets: a new read-only query returns the last N completed minutes per kind, correctly crossing midnight. Bars auto-range to the window maximum with a sensible floor (per-channel calibration knobs stay deferred, per the concept's own v1 cuts).
+- Peak-hold is the session's maximum observed rate per channel. It resets on relaunch in v1.
+- Missing sources keep the concept's honest language: a source-missing COGNITION channel reads UNCALIBRATED — NO LOCAL SRC; a permission-gated MECHANICS channel reads UNCALIBRATED — PERMISSION with the existing grant affordance. The lattice still lights for whatever does report.
+- The paper receipt strip rendering inside the dark panel is intentional contrast and does not change.
+- The `DaySheet` core stays: the General Ledger window still uses it for unposted-day detail.
+- Deferred: the menubar label as a mini-meter (it keeps the running-balance figure), calibration knobs, and the Desktop widgets.
+
+## Visual design: the Byte Flow deck (shipped)
+
+The panel is a chart-led live dashboard on a byte-native dark chassis. The governing rule is that light is data: every glow, pulse, and ticker value is driven by real measurements, and the panel settles to a quiet dark baseline when nothing flows.
+
+- Chassis: panel width 360, fixed, leading-aligned, ALWAYS dark in both appearances. Background #0B0E11; cards #12171C with corner radius 8 and a 1px hairline #1E262D; dial text #E8EDF2 with a dim variant at 55% opacity. System monospaced font with tabular digits throughout.
+- Channel signal colors (each channel owns exactly one): TRAFFIC teal #46E0C8, STORAGE violet #9B8CFF, COGNITION amber #E8A317, EXPOSURE green #5FC46A, MECHANICS coral #FF6B5B. Brass gold appears nowhere on the deck; it stays reserved for BALANCED on ledger surfaces.
+- Header: "BYTELIFE // FLOW" in tiny dim caps with a LIVE chip that lights amber only while some channel clears its liveness threshold; the hero figure (today's posted byte volume) at 26pt semibold monospaced with a soft amber glow and the numeric-roll transition; a combined traffic-plus-storage flow line in teal, dimmed when the byte channels are idle; and the hex ticker, a thin teal line printing the last four real inter-poll byte deltas as hexadecimal, newest first.
+- The hero flow chart (Swift Charts, a system framework, so the zero-dependency rule holds): the last 30 completed minutes as two smooth gradient area-plus-line series, network in teal and disk in violet, on ONE shared absolute bytes/s scale so the taller series really is the bigger flow, with a floor on the domain so an idle half hour reads flat instead of zooming into noise.
+- Channel cards in order TRAFFIC, STORAGE, COGNITION, EXPOSURE, MECHANICS. Rate cards carry: the channel name in its color, a small pulsing live dot (inserted only while the channel is live, so a quiet panel is still), the live readout glowing in the channel color when live and dim otherwise, a gradient area sparkline of the 30-minute window in the channel color with the window maximum held as a dial-white dot, and a dim sub-line with today's directional totals plus the session peak readout. COGNITION additionally shows the ratio bar: a slim two-segment bar of today's prompted (dim) versus generated (bright) tokens — the exchange rate as a shape.
+- EXPOSURE is the one radial element, because attention is the one absolute-scale channel: a green ring showing the fraction of the day attentive, the accumulated duration as its readout, and its sparkline scale normalized against a true 60-second full scale in the core.
+- Liveness is a real gate, not a nonzero test: each channel has a threshold (512 B/s for the byte channels, 1 tok/min, 1 kpm) and the core snaps the EMA to exactly zero once it decays well below threshold, so live lights actually turn off. On panel reopen the rates cold-start (previous snapshot and smoothing dropped, peaks kept) so no phantom decaying rate ever shows and a close-gap average can never forge a session peak.
+- UNCALIBRATED channels keep the honest language ("UNCALIBRATED — NO LOCAL SRC" for a missing AI source; "UNCALIBRATED" with the calibrate affordance for permission-gated MECHANICS) in the channel color at 70%, over a flat chart.
+- Motion rules, exhaustive: numeric rolls on readouts, the per-channel live dot's breath gated on liveness, nothing else animates.
+- The footer keeps Reconcile, the POSTED stamp logic and colors, View receipt, launch-at-login, the General Ledger button, and Quit on the dark chassis. No spanning or long content may drive the panel wider than its frame; long tags wrap or truncate.
+
+## Verification
+
+`swift build` and `swift test` green with the new core (rate math, normalization, peak-hold, minute-window query across midnight) under test; the packaged app relaunches and renders the Meter Bridge with live rates while the Ledger surfaces behave unchanged.
+
 ## Verification
 
 `swift build`, `swift build -c release`, and `swift test` green; the packaged app relaunches against the existing live store, migrates it to v2, renders the Ledger panel, and can close today's books producing a stored, hash-stamped receipt.

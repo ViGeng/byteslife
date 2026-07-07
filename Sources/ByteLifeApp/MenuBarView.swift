@@ -25,50 +25,40 @@ struct ByteLifeApplication: App {
     }
 }
 
-/// The Ledger day sheet: five account blocks with aligned debit and credit columns, a Reconcile control,
-/// and a footer. The whole sheet shares one `Grid` so the debit and credit figures line up to the pixel
-/// across every account, exactly as a real ledger's columns do.
+/// The menubar panel: the live Meter Bridge instrument on a fixed dark faceplate, with the Reconcile
+/// control and footer beneath it. The bridge reads live rates and history bars; the footer keeps the
+/// record layer (Reconcile, the POSTED stamp, the receipt, the General Ledger) exactly as it behaves.
+/// The panel is always dark regardless of the system appearance, the way real hardware has a fixed face.
 struct MenuBarView: View {
     @ObservedObject var viewModel: DashboardViewModel
-    @Environment(\.colorScheme) private var scheme
     @Environment(\.openWindow) private var openWindow
-    /// When true, the panel shows the stored receipt strip in place of the day sheet. Set on posting
-    /// and by the posted-state "View receipt" control; cleared by the strip's Done button.
+    /// When true, the panel shows the stored receipt strip in place of the meter. Set on posting and by
+    /// the posted-state "View receipt" control; cleared by the strip's Done button.
     @State private var showingReceipt = false
 
-    private var ink: Color { LedgerPalette.primaryInk(scheme) }
+    private var ink: Color { LatticePalette.dial }
 
     var body: some View {
         Group {
             if showingReceipt, let receipt = viewModel.todaysReceipt {
                 receiptPanel(receipt)
             } else {
-                daySheetPanel
+                meterPanel
             }
         }
-        .frame(width: 340, alignment: .leading)
-        .background(LedgerPalette.surface(scheme))
+        .frame(width: 360, alignment: .leading)
+        .background(LatticePalette.chassis)
         .foregroundStyle(ink)
         // The panel polls fast and animates while open, slow and label-only while closed.
         .onAppear { viewModel.panelDidAppear() }
         .onDisappear { viewModel.panelDidDisappear() }
     }
 
-    private var daySheetPanel: some View {
+    private var meterPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            Rectangle().fill(LedgerPalette.pencil).frame(height: 1)
-
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 3) {
-                ForEach(viewModel.daySheet.accounts) { account in
-                    accountBlock(account)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-
+            MeterBridgeView(viewModel: viewModel)
             reconcileBar
-            Rectangle().fill(LedgerPalette.pencil).frame(height: 1)
+            Rectangle().fill(LatticePalette.hairline).frame(height: 1)
             footer
         }
     }
@@ -82,13 +72,14 @@ struct MenuBarView: View {
             HStack {
                 Text("RECEIPT")
                     .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(LatticePalette.dial)
                 Spacer()
                 Button("Done") { withAnimation(.easeOut(duration: 0.15)) { showingReceipt = false } }
                     .font(.system(.caption, design: .monospaced))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            Rectangle().fill(LedgerPalette.pencil).frame(height: 1)
+            Rectangle().fill(LatticePalette.hairline).frame(height: 1)
 
             ScrollView(.vertical) {
                 ReceiptStripView(reconciliation: receipt)
@@ -98,98 +89,6 @@ struct MenuBarView: View {
             .frame(maxHeight: 420)
         }
         .transition(.opacity)
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("DAY SHEET")
-                .font(.system(.subheadline, design: .monospaced).weight(.semibold))
-            Spacer()
-            Text(viewModel.daySheet.postedByteVolume)
-                .font(.system(.subheadline, design: .monospaced).weight(.semibold))
-                .monospacedDigit()
-                .contentTransition(.numericText(countsDown: false))
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 8)
-    }
-
-    // MARK: - Account block
-
-    @ViewBuilder
-    private func accountBlock(_ account: DaySheetAccount) -> some View {
-        // Account title, spanning all three columns.
-        GridRow {
-            Text(account.title.uppercased())
-                .font(.system(.caption, design: .monospaced).weight(.semibold))
-                .foregroundStyle(ink)
-                .gridCellColumns(3)
-        }
-
-        ForEach(account.lines) { line in
-            GridRow {
-                Text(line.label)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(ink.opacity(0.85))
-                Text(line.side == .debit ? line.value : "")
-                    .font(.system(.caption2, design: .monospaced))
-                    .monospacedDigit()
-                    .contentTransition(.numericText(countsDown: false))
-                    .foregroundStyle(LedgerPalette.debit)
-                    .gridColumnAlignment(.trailing)
-                Text(line.side == .debit ? "" : line.value)
-                    .font(.system(.caption2, design: .monospaced))
-                    .monospacedDigit()
-                    .contentTransition(.numericText(countsDown: false))
-                    .foregroundStyle(line.side == .credit ? LedgerPalette.credit : ink.opacity(0.55))
-                    .gridColumnAlignment(.trailing)
-            }
-        }
-
-        if let disclosure = account.disclosure {
-            GridRow {
-                // Spanning rows must never drive the grid's width: unsized on the horizontal axis so
-                // long disclosures wrap inside the column-derived width instead of forcing the panel
-                // wider than its frame (which SwiftUI resolves by clipping both edges).
-                Text(disclosure)
-                    .font(.system(.caption2, design: .monospaced).italic())
-                    .foregroundStyle(LedgerPalette.pencil)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .gridCellColumns(3)
-                    .gridCellUnsizedAxes(.horizontal)
-            }
-        }
-
-        if account.availability == .needsPermission {
-            GridRow {
-                permissionAffordance
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .gridCellColumns(3)
-                    .gridCellUnsizedAxes(.horizontal)
-            }
-        }
-
-        // Hairline rule closing the account.
-        GridRow {
-            Rectangle().fill(LedgerPalette.pencil).frame(height: 1).gridCellColumns(3)
-        }
-    }
-
-    private var permissionAffordance: some View {
-        Menu {
-            Button("Grant Permission…") { viewModel.requestInputPermission() }
-            Button("Open Input Monitoring Settings…") {
-                PermissionsHint.openInputMonitoringSettings()
-            }
-        } label: {
-            Label("Awaiting permission to open this account", systemImage: "lock")
-                .font(.system(.caption2, design: .monospaced))
-        }
-        .menuStyle(.borderlessButton)
-        .foregroundStyle(LedgerPalette.debit)
     }
 
     // MARK: - Reconcile

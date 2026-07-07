@@ -166,6 +166,46 @@ final class SampleStoreTests: XCTestCase {
         XCTAssertEqual(try store.metaInt("net.baseline.en0"), 3)
     }
 
+    func testMinuteSeriesCrossesMidnightWithZerosAndExcludesInProgressMinute() throws {
+        let store = try SampleStore(path: dbPath)
+        let todayMidnight = Calendar.current.startOfDay(for: Date())
+
+        // Build both days off `todayMidnight` by second-offset, the same way the query walks back one
+        // minute at a time, so the alignment holds regardless of any DST oddity on the boundary day.
+        func at(minutesFromMidnight m: Int, second: Int = 15) -> Date {
+            todayMidnight.addingTimeInterval(TimeInterval(m * 60 + second))
+        }
+
+        try store.record([
+            // Today's head.
+            Sample(kind: .networkBytesIn, value: 100, timestamp: at(minutesFromMidnight: 0)),
+            Sample(kind: .networkBytesIn, value: 200, timestamp: at(minutesFromMidnight: 1)),
+            Sample(kind: .networkBytesIn, value: 300, timestamp: at(minutesFromMidnight: 2)),
+            Sample(kind: .networkBytesIn, value: 400, timestamp: at(minutesFromMidnight: 3)),
+            Sample(kind: .networkBytesIn, value: 500, timestamp: at(minutesFromMidnight: 4)),
+            // The reference's own minute (5) is still in progress and must be excluded.
+            Sample(kind: .networkBytesIn, value: 999, timestamp: at(minutesFromMidnight: 5)),
+            // Yesterday's tail: 23:59 (-1) and 23:55 (-5), with gaps between that must read as zero.
+            Sample(kind: .networkBytesIn, value: 700, timestamp: at(minutesFromMidnight: -1)),
+            Sample(kind: .networkBytesIn, value: 600, timestamp: at(minutesFromMidnight: -5)),
+        ])
+
+        let reference = at(minutesFromMidnight: 5, second: 30)
+        let series = try store.minuteSeries(kinds: [.networkBytesIn], count: 10, endingBefore: reference)
+
+        // Oldest first: [23:55, 23:56, 23:57, 23:58, 23:59, 00:00, 00:01, 00:02, 00:03, 00:04].
+        XCTAssertEqual(series[.networkBytesIn], [600, 0, 0, 0, 700, 100, 200, 300, 400, 500])
+    }
+
+    func testMinuteSeriesReturnsZerosForAnEmptyWindow() throws {
+        let store = try SampleStore(path: dbPath)
+        let series = try store.minuteSeries(
+            kinds: [.inputKeystrokes, .diskBytesRead], count: 5, endingBefore: Date()
+        )
+        XCTAssertEqual(series[.inputKeystrokes], [0, 0, 0, 0, 0])
+        XCTAssertEqual(series[.diskBytesRead], [0, 0, 0, 0, 0])
+    }
+
     func testPruneRemovesOldKeepsRecent() throws {
         let store = try SampleStore(path: dbPath)
         let today = DayBucket.dayEpoch(for: Date())

@@ -2,7 +2,7 @@
 
 ByteLife is a native macOS app that tracks the digital side of a person's existence, centered on the concept of bytes. It aggregates AI token usage, network traffic, disk activity, screen time, and physical input into one dashboard of digital life.
 
-Version 0.2.0 is implemented and running: a menubar app with five working collectors, a SQLite store with minute-level rollups, and the Ledger experience applied on top. The menubar shows today's running balance, the dropdown is the live day sheet with debit and credit columns in the ledger palette, the Reconcile ritual closes the day into an immutable hash-stamped receipt, and the General Ledger window holds the posted history and the trial balance. The concept brief below and the research under docs/ remain the design ground truth.
+Version 0.3.0 is implemented and running. The menubar shows today's running balance, and the dropdown is the Byte Flow deck: a chart-led live dashboard on a dark byte-native chassis, with a hero flow chart of the last half hour (network and disk on one shared scale), a gradient sparkline and glowing live rate per channel in its own signal color, an attention ring, a prompted-versus-generated token ratio bar, and a hex ticker printing real inter-poll byte deltas. The Ledger remains the record layer underneath: the Reconcile ritual closes the day into an immutable hash-stamped receipt, and the General Ledger window holds the posted history and the trial balance. The concept brief below and the research under docs/ remain the design ground truth.
 
 ## Premise
 
@@ -69,7 +69,7 @@ The key facts from the research, detailed in [docs/research/feasibility.md](docs
 
 ## Version 1 scope
 
-- A menubar extra shows today's running balance and drops down a five-account day sheet. (Implemented, in the Ledger skin, with live rolling figures while the panel is open.)
+- A menubar extra shows today's running balance and drops down the live five-channel view. (Implemented as the Byte Flow dashboard, with live rates, charts, and rolling figures while the panel is open.)
 - A General Ledger window holds the posted history and the trial balance. (Implemented.)
 - The nightly Reconcile ritual produces the daily receipt. (Implemented: BALANCED in brass, FLAGGED with the short accounts named, or POSTED IN ARREARS for a past day closed late.) The weekly Statement is not yet built.
 - Data collectors cover the five families listed in the feasibility table. (Implemented.)

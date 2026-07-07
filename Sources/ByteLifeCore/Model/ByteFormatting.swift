@@ -91,6 +91,33 @@ public enum ByteFormatting {
         "\(compact(milliPixels / 1000)) px"
     }
 
+    /// Formats a throughput in bytes per second on the same binary-unit ladder as `bytes`, suffixed
+    /// "/s", e.g. 2_202_010 -> "2.1 MB/s", 500 -> "500 B/s", 0 -> "0 B/s". The rate is rounded to whole
+    /// bytes first, so sub-byte jitter never leaks into the reading. Used by the Meter Bridge's TRAFFIC
+    /// and STORAGE channels.
+    public static func byteRate(_ bytesPerSecond: Double) -> String {
+        let count = Int64(max(0, bytesPerSecond).rounded())
+        return bytes(count) + "/s"
+    }
+
+    /// Formats a throughput in tokens per minute compactly, e.g. 312 -> "312 tok/min",
+    /// 1_500 -> "1.5K tok/min". Used by the Meter Bridge's COGNITION channel.
+    public static func tokenRate(_ tokensPerMinute: Double) -> String {
+        "\(compact(Int64(max(0, tokensPerMinute).rounded()))) tok/min"
+    }
+
+    /// Formats a typing cadence in keystrokes per minute as the instrument's "kpm" reading, e.g.
+    /// 42 -> "42 kpm", 312 -> "312 kpm". Used by the Meter Bridge's MECHANICS channel.
+    public static func keyRate(_ keysPerMinute: Double) -> String {
+        "\(Int64(max(0, keysPerMinute).rounded())) kpm"
+    }
+
+    /// A byte delta as raw hexadecimal ("0x1F4A2"), the panel's hex ticker unit. Negative deltas clamp
+    /// to zero: the ticker prints flow, never accounting noise.
+    public static func hex(_ value: Int64) -> String {
+        "0x" + String(max(0, value), radix: 16, uppercase: true)
+    }
+
     /// Compact magnitude formatting shared by token and pixel output: K/M/B suffixes above 1000.
     private static func compact(_ count: Int64) -> String {
         if count < 1_000 { return "\(count)" }
