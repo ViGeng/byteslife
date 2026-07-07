@@ -1,0 +1,30 @@
+{
+  "sessionId": "gem-sess-1",
+  "projectHash": "abc123",
+  "startTime": "2026-07-06T12:00:00.000Z",
+  "lastUpdated": "2026-07-06T12:05:00.000Z",
+  "messages": [
+    {
+      "id": "m0",
+      "type": "user",
+      "timestamp": "2026-07-06T12:00:00.000Z",
+      "content": "hello"
+    },
+    {
+      "id": "m1",
+      "type": "gemini",
+      "timestamp": "2026-07-06T12:00:05.000Z",
+      "content": "hi there",
+      "model": "gemini-2.5-pro",
+      "tokens": {"input": 100, "output": 10, "cached": 5, "thoughts": 3, "tool": 0, "total": 118}
+    },
+    {
+      "id": "m2",
+      "type": "gemini",
+      "timestamp": "2026-07-06T12:01:00.000Z",
+      "content": "more output",
+      "model": "gemini-2.5-pro",
+      "tokens": {"input": 200, "output": 20, "cached": 0, "thoughts": 7, "tool": 2, "total": 229}
+    }
+  ]
+}

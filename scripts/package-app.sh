@@ -45,15 +45,25 @@ cat > "${CONTENTS}/Info.plist" <<'PLIST'
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.6.0</string>
+    <string>0.7.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
 </dict>
 </plist>
 PLIST
 
-echo "==> Ad-hoc codesigning"
-codesign --force --sign - "$BUNDLE"
+# Input Monitoring (and every other TCC) grant binds to the code-signing identity. A stable, self-signed
+# "ByteLife Local" identity in the keychain keeps those grants valid across rebuilds; ad-hoc signing mints
+# a fresh identity every run, silently staling the old grant. Prefer the stable identity when present,
+# otherwise fall back to ad hoc exactly as before. This script never creates a certificate.
+IDENTITY_NAME="ByteLife Local"
+if security find-identity -v -p codesigning | grep -q "\"$IDENTITY_NAME\""; then
+    echo "==> Codesigning with keychain identity \"$IDENTITY_NAME\" (stable TCC grants)"
+    codesign --force --sign "$IDENTITY_NAME" "$BUNDLE"
+else
+    echo "==> Codesigning ad hoc (no \"$IDENTITY_NAME\" identity in keychain; TCC grants will not persist across rebuilds)"
+    codesign --force --sign - "$BUNDLE"
+fi
 codesign --verify --verbose "$BUNDLE"
 
 echo "==> Done: ${BUNDLE}"

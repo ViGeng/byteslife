@@ -29,6 +29,14 @@ LABOR ACCOUNT
   Keys Struck         Dr           8,412
   Distance Hauled     Dr           300 m
 ----------------------------------------
+AUXILIARY
+  Energy                         45.6 Wh
+  Files Touched                    1,284
+  Hosts Contacted                     27
+  Unlocks                             12
+  Sessions                            34
+  Top App                   Xcode 2h 30m
+----------------------------------------
 POSTED BYTE VOLUME                8.0 GB
 ========================================
 > Network traffic up 340% versus the
@@ -37,5 +45,5 @@ POSTED BYTE VOLUME                8.0 GB
 ----------------------------------------
               * BALANCED *
 ----------------------------------------
-Content hash            43e726a4981f22c6
+Content hash            cc9977e099bd652e
 ========================================

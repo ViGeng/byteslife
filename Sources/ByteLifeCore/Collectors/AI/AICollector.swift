@@ -27,15 +27,19 @@ public final class AICollector: Collector, @unchecked Sendable {
     private var startedSources: Set<ObjectIdentifier> = []
     private var recheck: Scheduler?
 
-    /// Injecting `sources` is for tests; production passes nil to get the default Claude Code source
-    /// bound to this collector's queue.
+    /// Injecting `sources` is for tests; production passes nil to get the default local-log sources
+    /// (Claude Code, Codex, Gemini) all bound to this collector's queue.
     public init(
         store: SampleStore,
         sources: [AIUsageSource]? = nil,
         recheckInterval: DispatchTimeInterval = .seconds(30)
     ) {
         let queue = DispatchQueue(label: "life.byte.ai")
-        let resolved = sources ?? [ClaudeCodeSource(store: store, queue: queue)]
+        let resolved = sources ?? [
+            ClaudeCodeSource(store: store, queue: queue),
+            CodexSource(store: store, queue: queue),
+            GeminiSource(store: store, queue: queue),
+        ]
         self.queue = queue
         self.store = store
         self.sources = resolved
@@ -46,6 +50,12 @@ public final class AICollector: Collector, @unchecked Sendable {
     public var availability: Availability {
         lock.lock(); defer { lock.unlock() }
         return backingAvailability
+    }
+
+    /// Each registered source's name and whether its local logs are present, in registration order, so
+    /// the Token Account can disclose which AI tools are reporting and which are not yet opened.
+    public func sourceStatuses() -> [AISourceStatus] {
+        sources.map { AISourceStatus(displayName: $0.displayName, isReporting: $0.isAvailable) }
     }
 
     public func start() {

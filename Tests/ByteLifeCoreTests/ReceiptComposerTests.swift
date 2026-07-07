@@ -16,7 +16,16 @@ final class ReceiptComposerTests: XCTestCase {
         .screenAttentiveSeconds: 24_120,   // 06:42
         .inputKeystrokes: 8_412,
         .inputMouseMilliPixels: 2_600_000_000,
+        // Accessory figures booked in the AUXILIARY section.
+        .energyMilliwattHours: 45_600,     // 45.6 Wh
+        .filesTouched: 1_284,
+        .screenUnlocks: 12,
+        .attentionSessions: 34,
     ]
+
+    /// The accessory figures the AUXILIARY section carries beyond the totals dictionary.
+    private static let goldenDistinctHosts = 27
+    private static let goldenTopApp: (name: String, seconds: Int64) = (name: "Xcode", seconds: 9_000)
 
     private static let goldenComment =
         "Network traffic up 340% versus the trailing average. No judgment. Filing it."
@@ -40,7 +49,9 @@ final class ReceiptComposerTests: XCTestCase {
             availability: allRunning(),
             machineName: "studio.local",
             marginComment: Self.goldenComment,
-            calendar: utcCalendar()
+            calendar: utcCalendar(),
+            auxDistinctHosts: Self.goldenDistinctHosts,
+            auxTopApp: Self.goldenTopApp
         )
     }
 
@@ -90,6 +101,45 @@ final class ReceiptComposerTests: XCTestCase {
         let expected = try String(contentsOf: url, encoding: .utf8)
         // The fixture is stored with a trailing newline; the composed text has none.
         XCTAssertEqual(composeGolden().text + "\n", expected)
+    }
+
+    // MARK: - Auxiliary section
+
+    func testAuxiliarySectionBooksTheAccessoryFigures() {
+        let text = composeGolden().text
+        XCTAssertTrue(text.contains("AUXILIARY"))
+        XCTAssertTrue(text.contains("Energy"))
+        XCTAssertTrue(text.contains("45.6 Wh"))
+        XCTAssertTrue(text.contains("Files Touched"))
+        XCTAssertTrue(text.contains(ByteFormatting.grouped(1_284)))   // 1,284
+        XCTAssertTrue(text.contains("Hosts Contacted"))
+        XCTAssertTrue(text.contains("27"))
+        XCTAssertTrue(text.contains("Unlocks"))
+        XCTAssertTrue(text.contains("Sessions"))
+        XCTAssertTrue(text.contains("Top App"))
+        // The top app reads as one line: short name plus its time.
+        XCTAssertTrue(text.contains("Xcode \(ByteFormatting.duration(seconds: 9_000))"))
+    }
+
+    func testAuxiliarySectionFallsBackToDashWithoutATopApp() {
+        let receipt = ReceiptComposer.compose(
+            dayEpoch: 1_783_296_000, totals: [:], availability: allRunning(),
+            machineName: "studio.local", marginComment: Self.goldenComment, calendar: utcCalendar()
+        )
+        XCTAssertTrue(receipt.text.contains("AUXILIARY"))
+        // No focus on file: the top-app line dashes, and the zeroed figures still book.
+        XCTAssertTrue(receipt.text.contains("Top App"))
+        XCTAssertTrue(receipt.text.contains("0.0 Wh"))
+    }
+
+    func testAuxiliaryFiguresChangeTheHash() {
+        let base = composeGolden().contentHash
+        let moreHosts = ReceiptComposer.compose(
+            dayEpoch: 1_783_296_000, totals: Self.goldenTotals, availability: allRunning(),
+            machineName: "studio.local", marginComment: Self.goldenComment, calendar: utcCalendar(),
+            auxDistinctHosts: 99, auxTopApp: Self.goldenTopApp
+        )
+        XCTAssertNotEqual(moreHosts.contentHash, base)
     }
 
     // MARK: - Stamp decision

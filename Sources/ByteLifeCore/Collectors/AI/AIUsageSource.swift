@@ -8,6 +8,10 @@ public protocol AIUsageSource: AnyObject {
     /// Stable identifier, unique within the collector (for example "ai.claudeCode").
     var id: String { get }
 
+    /// A short human name for the source, shown in the Token Account's source-aware disclosure (for
+    /// example "Claude Code"). Defaults to `id` for sources that do not override it.
+    var displayName: String { get }
+
     /// Whether the source's data root currently exists. False means the tool is not installed here.
     var isAvailable: Bool { get }
 
@@ -16,4 +20,8 @@ public protocol AIUsageSource: AnyObject {
 
     /// Stops watching and releases every OS resource (file descriptors, watchers). Idempotent.
     func stop()
+}
+
+public extension AIUsageSource {
+    var displayName: String { id }
 }

@@ -110,6 +110,29 @@ final class DayStoryTests: XCTestCase {
         XCTAssertEqual(story.cards[0].lines.first { $0.label == "Exchange rate" }?.value, "n/a")
     }
 
+    func testLaborCardCarriesTypingCadenceMemosWhenSupplied() {
+        // A supplied cadence adds two memo lines after the Labor account's existing figures.
+        let cadence = TypingCadence(peakKeysPerMinute: 84, averageKeysPerActiveMinute: 31.6, activeMinutes: 12)
+        let story = DayStory.build(
+            dayEpoch: 0, totals: [.inputKeystrokes: 8_000], hourly: [:], cadence: cadence
+        )
+        let labor = story.cards[4]
+        XCTAssertEqual(labor.lines.map(\.label),
+                       ["Keys Struck", "Distance Hauled", "Peak cadence", "Avg cadence"])
+        let peak = labor.lines.first { $0.label == "Peak cadence" }
+        XCTAssertEqual(peak?.value, "84 kpm")
+        XCTAssertEqual(peak?.side, .memo)
+        let avg = labor.lines.first { $0.label == "Avg cadence" }
+        XCTAssertEqual(avg?.value, "32 kpm")  // 31.6 rounds to 32
+        XCTAssertEqual(avg?.side, .memo)
+    }
+
+    func testDayStoryWithoutCadenceOmitsCadenceMemos() {
+        // No cadence supplied (the aggregate-period path): the Labor card keeps only its base figures.
+        let story = DayStory.build(dayEpoch: 0, totals: [.inputKeystrokes: 8_000], hourly: [:])
+        XCTAssertEqual(story.cards[4].lines.map(\.label), ["Keys Struck", "Distance Hauled"])
+    }
+
     func testHourlyKindsCoverEveryAccountChannelExactly() {
         XCTAssertEqual(Set(DayStory.hourlyKinds), Set([
             .aiInputTokens, .aiOutputTokens, .networkBytesIn, .networkBytesOut,

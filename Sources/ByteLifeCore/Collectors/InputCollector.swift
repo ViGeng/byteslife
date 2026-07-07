@@ -10,6 +10,8 @@ final class TapContext {
     private let lock = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1)
     private var keystrokes: Int64 = 0
     private var mousePixels: Double = 0
+    private var clicks: Int64 = 0
+    private var scrollUnits: Int64 = 0
 
     /// Set once on the tap thread right after the tap is created, then read there in the callback to
     /// re-enable a tap the system disabled. Not touched from other threads.
@@ -37,15 +39,36 @@ final class TapContext {
         os_unfair_lock_unlock(lock)
     }
 
-    /// Atomically reads and zeroes the counters, returning keystrokes and mouse travel in milli-pixels.
-    func drain() -> (keystrokes: Int64, mouseMilliPixels: Int64) {
+    /// Counts one mouse-button press. The button and location are never read.
+    func addClick() {
+        os_unfair_lock_lock(lock)
+        clicks &+= 1
+        os_unfair_lock_unlock(lock)
+    }
+
+    /// Accumulates the absolute scroll travel of one wheel event, in point units. Non-positive units are
+    /// dropped so a no-op event never touches the counter.
+    func addScroll(units: Int64) {
+        guard units > 0 else { return }
+        os_unfair_lock_lock(lock)
+        scrollUnits &+= units
+        os_unfair_lock_unlock(lock)
+    }
+
+    /// Atomically reads and zeroes the counters, returning keystrokes, mouse travel in milli-pixels,
+    /// clicks, and accumulated scroll units.
+    func drain() -> (keystrokes: Int64, mouseMilliPixels: Int64, clicks: Int64, scrollUnits: Int64) {
         os_unfair_lock_lock(lock)
         let keys = keystrokes
         let pixels = mousePixels
+        let clickCount = clicks
+        let scroll = scrollUnits
         keystrokes = 0
         mousePixels = 0
+        clicks = 0
+        scrollUnits = 0
         os_unfair_lock_unlock(lock)
-        return (keys, Int64((pixels * 1000).rounded()))
+        return (keys, Int64((pixels * 1000).rounded()), clickCount, scroll)
     }
 }
 
@@ -67,6 +90,13 @@ private func inputTapCallback(
             deltaX: event.getDoubleValueField(.mouseEventDeltaX),
             deltaY: event.getDoubleValueField(.mouseEventDeltaY)
         )
+    case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+        context.addClick()
+    case .scrollWheel:
+        // Absolute point travel on both axes; the scroll's content and direction are never read.
+        let axis1 = abs(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1))
+        let axis2 = abs(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2))
+        context.addScroll(units: axis1 + axis2)
     case .tapDisabledByTimeout, .tapDisabledByUserInput:
         if let tap = context.tap { CGEvent.tapEnable(tap: tap, enable: true) }
     default:
@@ -100,12 +130,15 @@ private final class TapSession {
 
     /// Runs on the dedicated tap thread: creates the tap, pumps its run loop, then tears it down.
     func run() {
-        let mask: CGEventMask =
-            (1 << CGEventType.keyDown.rawValue) |
-            (1 << CGEventType.mouseMoved.rawValue) |
-            (1 << CGEventType.leftMouseDragged.rawValue) |
-            (1 << CGEventType.rightMouseDragged.rawValue) |
-            (1 << CGEventType.otherMouseDragged.rawValue)
+        // Listen-only interest: keystrokes, mouse motion, mouse-button presses, and scroll wheel. Built
+        // by reduction so the type-checker need not solve one nine-term bit-or expression.
+        let interested: [CGEventType] = [
+            .keyDown,
+            .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+            .leftMouseDown, .rightMouseDown, .otherMouseDown,
+            .scrollWheel,
+        ]
+        let mask = interested.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -178,30 +211,67 @@ public final class InputCollector: Collector, @unchecked Sendable {
     /// concurrent calls. Held across blocking waits (never during the availability-field critical
     /// section), so it must not be taken while `lock` is held.
     private let transition = NSLock()
-    /// Guards `backingAvailability` only, so `availability` stays readable from any thread cheaply.
+    /// Guards `backingAvailability` and `backingSuspectStale`, so both stay readable cheaply from any
+    /// thread.
     private let lock = NSLock()
     private var backingAvailability: Availability
+    private var backingSuspectStale = false
+
+    /// Reads the cumulative input-event and attentive-second totals the stale-tap detector diffs across
+    /// rechecks. Injected so tests drive the detector without a populated store; production reads today's
+    /// running totals from the store.
+    private let healthTotals: () -> (inputEvents: Int64, attentiveSeconds: Int64)
+
+    /// Test-only override for tap liveness. Production leaves this nil and creates a real event tap on a
+    /// dedicated thread; a test supplies `{ true }` to simulate the stale-tap state (a grant present and
+    /// the tap "running" yet delivering nothing) that a real `CGEventTap` cannot reach without a TCC
+    /// grant, so the stale-tap detection and recovery paths are exercised deterministically.
+    private let tapStarterOverride: (() -> Bool)?
 
     // Transition-owned state (touched only under `transition`).
     private var started = false
     private var drainScheduler: Scheduler?
     private var recheckScheduler: Scheduler?
     private var tapSession: TapSession?
+    /// The pure stale-tap detector. Fed one observation per recheck; latches suspect on a long attentive
+    /// run with zero input while the tap claims to run.
+    private var tapHealth: TapHealth
+    /// The previous recheck's cumulative totals, so the next recheck derives per-interval deltas. Nil
+    /// until the first recheck establishes a baseline.
+    private var lastHealthTotals: (inputEvents: Int64, attentiveSeconds: Int64)?
 
     /// Injecting `preflight`/`request` lets tests drive availability without touching TCC; production
-    /// uses the real Quartz Event Services checks.
+    /// uses the real Quartz Event Services checks. `tapHealth` and `healthTotalsProvider` are likewise
+    /// injectable so the stale-tap detection is driven deterministically in tests.
     public init(
         store: SampleStore,
         drainInterval: DispatchTimeInterval = .seconds(5),
         recheckInterval: DispatchTimeInterval = .seconds(10),
         preflight: @escaping () -> Bool = { CGPreflightListenEventAccess() },
-        request: @escaping () -> Void = { _ = CGRequestListenEventAccess() }
+        request: @escaping () -> Void = { _ = CGRequestListenEventAccess() },
+        tapHealth: TapHealth = TapHealth(),
+        healthTotalsProvider: (() -> (inputEvents: Int64, attentiveSeconds: Int64))? = nil,
+        tapStarter: (() -> Bool)? = nil
     ) {
         self.store = store
         self.drainInterval = drainInterval
         self.recheckInterval = recheckInterval
         self.preflight = preflight
         self.request = request
+        self.tapHealth = tapHealth
+        self.tapStarterOverride = tapStarter
+        // The default provider sums today's input kinds and reads attentive seconds straight from the
+        // store totals. Mouse travel is folded into the input sum because attentiveness is HID-idle
+        // driven: a user moving only the mouse stays attentive while keys, clicks, and scrolls stay
+        // flat, so any mouse travel proves the tap is still delivering and must not be mistaken for a
+        // dead tap. Both totals reset together at local midnight; the recheck drops the straddling interval.
+        self.healthTotals = healthTotalsProvider ?? {
+            let epoch = DayBucket.dayEpoch(for: Date())
+            let totals = (try? store.totals(forDayEpoch: epoch)) ?? [:]
+            let input = (totals[.inputKeystrokes] ?? 0) + (totals[.inputClicks] ?? 0)
+                + (totals[.inputScrollUnits] ?? 0) + (totals[.inputMouseMilliPixels] ?? 0)
+            return (input, totals[.screenAttentiveSeconds] ?? 0)
+        }
         self.backingAvailability = preflight() ? .running : .needsPermission
     }
 
@@ -212,16 +282,26 @@ public final class InputCollector: Collector, @unchecked Sendable {
         return backingAvailability
     }
 
+    /// True when the stale-tap detector has flagged the live tap as delivering nothing during attentive
+    /// time — the "silent disable race" from a grant gone stale under a changed signature. The panel
+    /// reads this to engrave "RE-GRANT — SIGNATURE CHANGED" on MECHANICS instead of the generic
+    /// UNCALIBRATED. Guarded by the same lock as `availability`, so any thread reads it cheaply.
+    public var tapSuspectStale: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return backingSuspectStale
+    }
+
     public func start() {
         transition.lock()
         defer { transition.unlock() }
         if started { return }
         started = true
+        resetHealth()
 
         if preflight() {
-            setAvailability(startTap() ? .running : .needsPermission)
+            setState(ensureTapLive() ? .running : .needsPermission, suspectStale: false)
         } else {
-            setAvailability(.needsPermission)
+            setState(.needsPermission, suspectStale: false)
         }
 
         let drain = Scheduler(queue: queue, interval: drainInterval) { [weak self] in self?.drain() }
@@ -242,6 +322,7 @@ public final class InputCollector: Collector, @unchecked Sendable {
         drainScheduler = nil
         recheckScheduler = nil
         stopTap()
+        resetHealth()
     }
 
     /// The only path that raises the Input Monitoring prompt. The UI calls this from an explicit user action.
@@ -261,6 +342,12 @@ public final class InputCollector: Collector, @unchecked Sendable {
         if counts.mouseMilliPixels > 0 {
             samples.append(Sample(kind: .inputMouseMilliPixels, value: counts.mouseMilliPixels, timestamp: now))
         }
+        if counts.clicks > 0 {
+            samples.append(Sample(kind: .inputClicks, value: counts.clicks, timestamp: now))
+        }
+        if counts.scrollUnits > 0 {
+            samples.append(Sample(kind: .inputScrollUnits, value: counts.scrollUnits, timestamp: now))
+        }
         if !samples.isEmpty { try? store.record(samples) }
     }
 
@@ -268,30 +355,67 @@ public final class InputCollector: Collector, @unchecked Sendable {
         transition.lock()
         defer { transition.unlock() }
         guard started else { return }
-        let granted = preflight()
-        if granted {
-            // Start the tap if it is not live yet; a creation failure keeps us in .needsPermission so
-            // the next recheck retries.
-            let live = tapSession != nil || startTap()
-            setAvailability(live ? .running : .needsPermission)
-        } else {
+        guard preflight() else {
+            // Grant explicitly revoked: tear the tap down, forget the run, and drop to needs-permission.
             stopTap()
-            setAvailability(.needsPermission)
+            resetHealth()
+            setState(.needsPermission, suspectStale: false)
+            return
         }
+        // Grant present: ensure the tap is live. A creation failure keeps us in needs-permission so the
+        // next recheck retries; there is no interval to judge until the tap actually runs.
+        guard tapSession != nil || ensureTapLive() else {
+            setState(.needsPermission, suspectStale: false)
+            return
+        }
+        // The tap reports running. Feed the stale-tap detector this interval's deltas: a long attentive
+        // run with zero input is the silent-disable signature of a grant gone stale under a changed
+        // signature, so drop to needs-permission with the re-grant tag while keeping the tap alive so a
+        // resumed event stream can recover it.
+        let suspect = observeTapHealth()
+        setState(suspect ? .needsPermission : .running, suspectStale: suspect)
     }
 
-    private func setAvailability(_ value: Availability) {
+    /// Feeds the stale-tap detector one recheck interval's deltas, derived from the cumulative totals.
+    /// Returns whether the tap now looks suspect. The first call only establishes a baseline; a negative
+    /// delta (the midnight totals reset) drops the straddling interval rather than feeding a bogus one.
+    private func observeTapHealth() -> Bool {
+        let current = healthTotals()
+        defer { lastHealthTotals = current }
+        guard let last = lastHealthTotals else { return tapHealth.isSuspect }
+        let inputDelta = current.inputEvents - last.inputEvents
+        let attentiveDelta = current.attentiveSeconds - last.attentiveSeconds
+        guard inputDelta >= 0, attentiveDelta >= 0 else { return tapHealth.isSuspect }
+        return tapHealth.observe(inputEvents: inputDelta, attentiveSeconds: attentiveDelta)
+    }
+
+    /// Discards the detector's run, baseline, and any latched suspicion, for a fresh tap lifecycle.
+    private func resetHealth() {
+        tapHealth.reset()
+        lastHealthTotals = nil
+        lock.lock(); backingSuspectStale = false; lock.unlock()
+    }
+
+    private func setState(_ value: Availability, suspectStale: Bool) {
         lock.lock()
         let changed = value != backingAvailability
         backingAvailability = value
+        backingSuspectStale = suspectStale
         lock.unlock()
         if changed { onAvailabilityChange?(value) }
     }
 
     // MARK: - Tap thread (all callers hold `transition`)
 
+    /// Whether the tap is live, honoring the test override when present and otherwise creating the real
+    /// tap. The override lets a test simulate a running-but-silent tap without a TCC grant.
+    private func ensureTapLive() -> Bool {
+        if let tapStarterOverride { return tapStarterOverride() }
+        return realStartTap()
+    }
+
     /// Spawns the tap thread and waits for creation to resolve. Returns whether the tap is now live.
-    private func startTap() -> Bool {
+    private func realStartTap() -> Bool {
         if tapSession != nil { return true }
         let session = TapSession(context: context)
         tapSession = session

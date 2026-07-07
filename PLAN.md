@@ -197,6 +197,50 @@ Status: executed 2026-07-07 (see CHANGELOG.md, iteration 7). Post-execution note
 
 `swift build` and `swift test` green with the new core rules (peak gap-gating, warm reopen, period grouping) tested; the founder confirms: no slide-in on first open, LIVE lit immediately when traffic flows, the LIVE toggle behaves, sharing a receipt reaches Messages with the image attached, and `brew install --cask` works from a clean tap.
 
+---
+
+# Iteration 8: the frozen-input fix, adjustable windows, and the wider estate
+
+Status: executed 2026-07-07 (see CHANGELOG.md, iteration 8). Post-execution notes: the review confirmed three majors, all fixed — the stale-tap detector now counts mouse travel as proof of a live tap (mouse-only attentive use no longer false-flags), persistent file watchers are bounded to recently-modified session files with a cheap stat re-check for older ones (1,327 historical Codex files against a 256-descriptor launchd limit would otherwise exhaust fds and starve nettop and SQLite), and TypingCadence is wired into the Back Office Labor card as peak/average memo rows. Two data minors were also fixed (a Gemini per-file high-water mark closes a double-count hole past the 45-day dedup prune; the auxiliary chips distinguish an off sensor from a running-but-idle one). Empirical facts baked into the parsers: Codex token_count events with null info are rate-limit heartbeats; Gemini token data lives in tmp/<hash>/chats/session-*.json, not logs.json. The auxiliary collectors live in a separate registry so a batteryless machine can never permanently FLAG receipts. The "N of M sources" disclosure is panel-scoped by design. Approved 2026-07-07 from founder feedback on 0.6.0 and the metrics questionnaire. Three threads: MECHANICS numbers never change (a real bug); the panel's chart window should be adjustable per channel (30 minutes up to day-wise); and the founder selected every proposed metric — more AI sources (Codex CLI and Gemini CLI), an energy account, an app-focus ledger, files touched, clicks and scrolls, typing cadence, sessions and unlocks, and distinct hosts contacted.
+
+## The frozen-input diagnosis (bug first)
+
+Input Monitoring TCC grants bind to the code-signing identity. The app is re-signed ad hoc on every package run, so each rebuild is a new identity: the old grant goes stale and the event tap is created successfully but silently delivers nothing — the "silent disable race" the feasibility research documented. Counts froze exactly this way (collected once, never moved again). Fixes, all three:
+
+- Detection: a tested core state machine flags a suspect tap — tap reportedly running but zero input events accumulated across a window where EXPOSURE was attentive (3 or more attentive minutes). The MECHANICS channel then drops to needsPermission with the honest tag "RE-GRANT — SIGNATURE CHANGED" and the calibrate affordance deep-links to Input Monitoring settings (the user removes and re-adds the app).
+- Prevention: package-app.sh signs with the identity named "ByteLife Local" when one exists in the keychain (a one-time self-signed code-signing certificate the founder creates in Keychain Access), falling back to ad hoc. A stable identity keeps grants valid across rebuilds.
+- Recovery guidance in the app: the re-grant tag plus the settings deep link.
+
+## Adjustable chart windows
+
+Each rate channel card and the hero flow chart get a window selector: 30M (30 one-minute buckets), 1H (30 two-minute), 6H (36 ten-minute), 24H (48 thirty-minute). Selection is per channel, persisted via AppStorage, rendered as a small dim monospaced menu beside the channel title. The core gains a window spec (total minutes, bucket minutes): minuteSeries data aggregates into buckets, values convert to the channel's rate axis per bucket (so floors and peak positions stay on one scale), and EXPOSURE keeps its absolute per-minute scale semantics within larger buckets (attentive seconds per bucket over bucket capacity). Tested: bucket aggregation, rate-axis conversion, floors across window sizes.
+
+## More AI sources: Codex and Gemini
+
+Two new AIUsageSource adapters behind the existing protocol, both local-log parsers with the existing dedup ledger and atomic ingest:
+- CodexSource: ~/.codex/sessions/**/rollout-*.jsonl, token_count events carrying CUMULATIVE totals — per-event deltas come from subtracting successive snapshots per session (the research-verified semantics); dedup keys from session + event position.
+- GeminiSource: the Gemini CLI's local session logs (inspect a real ~/.gemini on this machine if present; otherwise implement against the ccusage-documented format) with the same discipline.
+Both get hand-authored fixtures and tests (normal, duplicate, rotation, malformed). The Token Account disclosure becomes source-aware: "Partial: N of M sources reporting", listing which are open.
+
+## New accounts and sensors
+
+All additive; the samples schema takes new kinds without migration, plus schema v3 adds two tables:
+- Energy: an EnergyCollector reading IOKit power-source data (adapter wattage or battery discharge) into kind energyMilliwattHours as additive deltas. Book as watt-hours.
+- App focus: an AppFocusCollector polling NSWorkspace.frontmostApplication (5 s cadence, no permissions) into a new focus(day_epoch, bundle_id, seconds) table with UPSERT accumulate (per-app needs its own dimension; the samples table stays single-dimensional). Day story shows the top apps.
+- Files touched: an FSEvents-based collector counting file create/modify events under the home directory (count only, never paths), with default exclusions (~/Library, caches, .git internals, node_modules, .build) into kind filesTouched.
+- Distinct hosts: a nettop-polling collector (the researched fallback path; undocumented format, availability degrades honestly if parsing fails) recording SALTED HASHES of remote hosts into a hosts_seen(day_epoch, host_hash) dedup table — the metric is the distinct count; no hostname is ever stored.
+- Clicks and scrolls: the existing event tap adds mouse-down and scroll-wheel events (same permission, count only) into kinds inputClicks and inputScrollUnits.
+- Sessions and unlocks: ScreenCollector counts screen unlocks (kind screenUnlocks) and attention sessions (kind attentionSessions, incremented on each attentive-state entry).
+- Typing cadence: pure derivation from existing keystroke minute buckets (peak and average keys per active minute); no new collection.
+
+## Surfaces
+
+The panel keeps its five flagship channels and gains a compact ALSO ON THE BOOKS strip above the reconcile bar: small adaptive chips for energy (Wh), top app (name + minutes), files touched, distinct hosts, and unlocks — figures only, no charts, honest dashes when a sensor is off. MECHANICS' sub-line gains clicks and cadence. The Back Office day story gains cards or memo rows for the new accounts (Energy Account, Focus Account with top five apps, Files Touched, Hosts Contacted, sessions/unlocks as EXPOSURE memos). The receipt gains an AUXILIARY section booking the new counters in the same dry grammar (golden fixture regenerated; the hash rule is unchanged — new receipts simply carry more lines). Version bumps to 0.7.0 and ships to the tap via release.sh.
+
+## Verification
+
+`swift build` and `swift test` green with the new core (window buckets, stale-tap detector, Codex/Gemini parsers, focus and hosts stores, cadence) tested; the founder re-grants Input Monitoring once and MECHANICS moves again; window menus switch charts between 30M and 24H; the new chips read real values.
+
 ## Verification
 
 `swift build` and `swift test` green with the new core (rate math, normalization, peak-hold, minute-window query across midnight) under test; the packaged app relaunches and renders the Meter Bridge with live rates while the Ledger surfaces behave unchanged.

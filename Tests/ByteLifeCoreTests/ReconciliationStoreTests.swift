@@ -37,8 +37,8 @@ final class ReconciliationStoreTests: XCTestCase {
         // A fresh store on the same file runs the additive migration.
         let store = try SampleStore(path: dbPath)
 
-        // Schema advanced to v2 and the new table exists.
-        XCTAssertEqual(readUserVersion(dbPath), 2)
+        // Opening migrates all the way to the current schema; the v2 reconciliations table exists.
+        XCTAssertEqual(readUserVersion(dbPath), Migrations.currentVersion)
         XCTAssertTrue(tableExists(dbPath, "reconciliations"))
 
         // Every v1 row survived intact.

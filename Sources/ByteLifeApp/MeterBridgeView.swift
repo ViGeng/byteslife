@@ -16,6 +16,14 @@ struct MeterBridgeView: View {
     /// live: they render dim, without glow or pulse, regardless of `isLive`.
     @AppStorage("liveMode") private var liveMode = true
 
+    // The persisted per-chart history windows. Each rate channel and the hero flow chart carries its own,
+    // default 30M; the view model reads the same keys to size its fetch, so these stay one source of truth.
+    @AppStorage(ChartWindowStore.key(.traffic)) private var trafficWindow: MeterWindow = .w30m
+    @AppStorage(ChartWindowStore.key(.storage)) private var storageWindow: MeterWindow = .w30m
+    @AppStorage(ChartWindowStore.key(.cognition)) private var cognitionWindow: MeterWindow = .w30m
+    @AppStorage(ChartWindowStore.key(.mechanics)) private var mechanicsWindow: MeterWindow = .w30m
+    @AppStorage(ChartWindowStore.heroKey) private var heroWindow: MeterWindow = .w30m
+
     private var bridge: MeterBridge { viewModel.meterBridge }
     /// Whether the given channel should render as live: it clears its threshold AND live mode is on.
     private func showsLive(_ channel: MeterChannel) -> Bool { liveMode && channel.isLive }
@@ -23,6 +31,54 @@ struct MeterBridgeView: View {
     private var glow: Double { LatticePalette.glow(scheme) }
     private func channel(_ kind: MeterChannelKind) -> MeterChannel? {
         bridge.channels.first { $0.kind == kind }
+    }
+
+    /// The persisted window binding for an adjustable rate channel, or nil for EXPOSURE, which has no
+    /// sparkline to zoom and so carries no selector.
+    private func windowBinding(for kind: MeterChannelKind) -> Binding<MeterWindow>? {
+        switch kind {
+        case .traffic: return $trafficWindow
+        case .storage: return $storageWindow
+        case .cognition: return $cognitionWindow
+        case .mechanics: return $mechanicsWindow
+        case .exposure: return nil
+        }
+    }
+
+    /// Hands the whole current window selection to the view model after any single menu changed one, so
+    /// the fetch depth and every channel's bucketing update together and the chart re-renders at once.
+    private func notifyWindows() {
+        viewModel.setWindows(
+            [.traffic: trafficWindow, .storage: storageWindow,
+             .cognition: cognitionWindow, .mechanics: mechanicsWindow],
+            hero: heroWindow
+        )
+    }
+
+    /// A compact dim monospaced window picker for a chart title (and the hero card). It reads the current
+    /// window token and, on selection, writes the persisted binding and notifies the view model.
+    private func windowMenu(_ selection: Binding<MeterWindow>) -> some View {
+        Menu {
+            ForEach(MeterWindow.allCases, id: \.self) { window in
+                Button {
+                    selection.wrappedValue = window
+                    notifyWindows()
+                } label: {
+                    if window == selection.wrappedValue {
+                        Label(window.token, systemImage: "checkmark")
+                    } else {
+                        Text(window.token)
+                    }
+                }
+            }
+        } label: {
+            Text(selection.wrappedValue.token)
+                .font(.system(size: 9, design: .monospaced).weight(.medium))
+                .foregroundStyle(LatticePalette.dim(scheme))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 
     var body: some View {
@@ -128,9 +184,11 @@ struct MeterBridgeView: View {
     }
 
     /// Network and disk on ONE absolute bytes/s scale, so the taller series really is the bigger flow.
+    /// The hero carries its own window (independent of the TRAFFIC and STORAGE cards), so it reads the
+    /// bridge's hero-window bucket series rather than either channel's `rawBars`.
     private var heroFlowChart: some View {
-        let traffic = channel(.traffic)?.rawBars ?? []
-        let storage = channel(.storage)?.rawBars ?? []
+        let traffic = bridge.heroTraffic
+        let storage = bridge.heroStorage
         var points: [FlowPoint] = []
         points += traffic.enumerated().map { FlowPoint(series: "traffic", minute: $0.offset, rate: $0.element) }
         points += storage.enumerated().map { FlowPoint(series: "storage", minute: $0.offset, rate: $0.element) }
@@ -167,6 +225,12 @@ struct MeterBridgeView: View {
         .frame(height: 56)
         .padding(8)
         .background(cardShape)
+        // The hero's own window selector, floated in the corner so the chart keeps its full height.
+        .overlay(alignment: .topTrailing) {
+            windowMenu($heroWindow)
+                .padding(.top, 5)
+                .padding(.trailing, 8)
+        }
     }
 
     // MARK: - Channel cards
@@ -182,6 +246,7 @@ struct MeterBridgeView: View {
                     .font(.system(.caption2, design: .monospaced).weight(.semibold))
                     .foregroundStyle(color.opacity(0.85))
                 if live { PulseDot(color: color, glow: glow) }
+                if let binding = windowBinding(for: channel.kind) { windowMenu(binding) }
                 Spacer()
                 Text(channel.rateReadout)
                     .font(.system(.caption, design: .monospaced).weight(.semibold))

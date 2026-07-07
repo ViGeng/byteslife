@@ -255,6 +255,29 @@ final class SampleStoreTests: XCTestCase {
         XCTAssertTrue(try store.hourlySeries(kinds: [], dayEpoch: day).isEmpty)
     }
 
+    func testDayMinuteSeriesReturnsOneKindsMinutesAscending() throws {
+        let store = try SampleStore(path: dbPath)
+        let day = DayBucket.dayEpoch(for: date(dayOffset: 0, minute: 0))
+        try store.record([
+            Sample(kind: .inputKeystrokes, value: 40, timestamp: date(dayOffset: 0, minute: 5)),
+            // Same minute, different second: accumulates into one cell.
+            Sample(kind: .inputKeystrokes, value: 10, timestamp: date(dayOffset: 0, minute: 5, second: 30)),
+            Sample(kind: .inputKeystrokes, value: 84, timestamp: date(dayOffset: 0, minute: 9)),
+            Sample(kind: .inputKeystrokes, value: 12, timestamp: date(dayOffset: 0, minute: 100)),
+            // A different kind on the same day must not leak in.
+            Sample(kind: .inputClicks, value: 999, timestamp: date(dayOffset: 0, minute: 9)),
+            // A different day must not leak in.
+            Sample(kind: .inputKeystrokes, value: 5, timestamp: date(dayOffset: 1, minute: 9)),
+        ])
+
+        // Ascending by minute; minute 5 accumulated 40 + 10 = 50. Only this kind, only this day.
+        XCTAssertEqual(try store.dayMinuteSeries(kind: .inputKeystrokes, dayEpoch: day), [50, 84, 12])
+
+        // A day/kind with no rows reads as an empty series.
+        let empty = DayBucket.dayEpoch(for: date(dayOffset: 3, minute: 0))
+        XCTAssertTrue(try store.dayMinuteSeries(kind: .inputKeystrokes, dayEpoch: empty).isEmpty)
+    }
+
     func testPruneRemovesOldKeepsRecent() throws {
         let store = try SampleStore(path: dbPath)
         let today = DayBucket.dayEpoch(for: Date())

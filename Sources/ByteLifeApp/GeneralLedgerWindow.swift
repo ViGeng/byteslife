@@ -38,6 +38,9 @@ final class GeneralLedgerViewModel: ObservableObject {
     /// The stored receipt for the selected day, or nil when the day is still open. Day granularity only;
     /// aggregate periods never compose a receipt.
     @Published private(set) var selectedReceipt: Reconciliation?
+    /// The selected day's (or aggregate period's) accessory accounts: energy, focus, files, hosts, and the
+    /// session/unlock memos. Day granularity carries the energy hourly bars; aggregates are figure-only.
+    @Published private(set) var selectedAuxiliary: AuxiliaryStory?
 
     /// Today's epoch, so the header can distinguish a still-open today from a closeable past day.
     let todayEpoch: Int64
@@ -50,6 +53,11 @@ final class GeneralLedgerViewModel: ObservableObject {
     private var days: [Int64] = []
     private var totalsByDay: [Int64: [MetricKind: Int64]] = [:]
     private var stampsByDay: [Int64: String] = [:]
+    /// Per-day accessory dimensions the samples table cannot carry: foreground seconds per app and the
+    /// distinct-host count. Cached alongside the totals so an aggregate selection merges and sums them in
+    /// memory, with no fresh store query.
+    private var focusByDay: [Int64: [String: Int64]] = [:]
+    private var hostsByDay: [Int64: Int] = [:]
 
     private var store: SampleStore { coordinator.store }
 
@@ -78,6 +86,8 @@ final class GeneralLedgerViewModel: ObservableObject {
         days = (try? store.dayEpochsWithData()) ?? []
         stampsByDay = (try? store.reconciledStamps()) ?? [:]
         totalsByDay = (try? store.totals(forDayEpochs: days)) ?? [:]
+        focusByDay = (try? store.focus(forDayEpochs: days)) ?? [:]
+        hostsByDay = (try? store.distinctHosts(forDayEpochs: days)) ?? [:]
         periods = LedgerPeriod.list(daysWithData: days, stampsByDay: stampsByDay)
         activity = DayActivity.rows(daysWithData: days, totalsByDay: totalsByDay)
         trialBalance = TrialBalance.rows(totals: (try? store.trialBalance()) ?? [:])
@@ -173,12 +183,26 @@ final class GeneralLedgerViewModel: ObservableObject {
         guard let day = selectedDay else {
             selectedStory = nil
             selectedReceipt = nil
+            selectedAuxiliary = nil
             return
         }
         selectedReceipt = (try? store.reconciliation(forDayEpoch: day)) ?? nil
         let totals = (try? store.totals(forDayEpoch: day)) ?? [:]
         let hourly = (try? store.hourlySeries(kinds: DayStory.hourlyKinds, dayEpoch: day)) ?? [:]
-        selectedStory = DayStory.build(dayEpoch: day, totals: totals, hourly: hourly)
+        // The day's typing rhythm for the Labor card, from its per-minute keystroke buckets. Day
+        // granularity only; the aggregate period story omits cadence.
+        let cadence = TypingCadence.from(
+            minuteKeystrokes: (try? store.dayMinuteSeries(kind: .inputKeystrokes, dayEpoch: day)) ?? []
+        )
+        selectedStory = DayStory.build(dayEpoch: day, totals: totals, hourly: hourly, cadence: cadence)
+
+        // The accessory accounts, with the energy per-hour bars from a single-day indexed hourly query.
+        let focus = (try? store.topFocus(dayEpoch: day, limit: 5)) ?? []
+        let hosts = (try? store.distinctHosts(dayEpoch: day)) ?? 0
+        let energyHourly = ((try? store.hourlySeries(kinds: [.energyMilliwattHours], dayEpoch: day)) ?? [:])[.energyMilliwattHours] ?? []
+        selectedAuxiliary = AuxiliaryStory.build(
+            totals: totals, focus: focus, distinctHosts: hosts, energyHourly: energyHourly
+        )
     }
 
     /// Shapes the selected aggregate period's story from the cached per-day rollups, with no store query
@@ -188,6 +212,7 @@ final class GeneralLedgerViewModel: ObservableObject {
         guard let id = selectedGroupID,
               let group = periodGroups.first(where: { $0.id == id }) else {
             selectedPeriodStory = nil
+            selectedAuxiliary = nil
             return
         }
         selectedPeriodStory = PeriodStory.build(
@@ -195,6 +220,23 @@ final class GeneralLedgerViewModel: ObservableObject {
             dayEpochs: group.dayEpochs,
             totalsByDay: totalsByDay,
             stampsByDay: stampsByDay
+        )
+
+        // The aggregate accessory accounts: sum the accessory totals and the distinct-host counts across
+        // member days, and merge the per-day focus rows into one period-wide top list. Figure-only (no
+        // hourly bars), all from the cached per-day maps with no fresh store query.
+        var summed: [MetricKind: Int64] = [:]
+        var mergedFocus: [String: Int64] = [:]
+        var hostsTotal = 0
+        for day in group.dayEpochs {
+            for (kind, value) in totalsByDay[day] ?? [:] { summed[kind, default: 0] += value }
+            for (bundle, seconds) in focusByDay[day] ?? [:] { mergedFocus[bundle, default: 0] += seconds }
+            hostsTotal += hostsByDay[day] ?? 0
+        }
+        selectedAuxiliary = AuxiliaryStory.build(
+            totals: summed,
+            focus: mergedFocus.map { (bundleId: $0.key, seconds: $0.value) },
+            distinctHosts: hostsTotal
         )
     }
 }
@@ -492,6 +534,9 @@ struct GeneralLedgerView: View {
                         LazyVGrid(columns: gridColumns, spacing: 12) {
                             ForEach(Array(story.cards.dropFirst()), content: accountCard)
                         }
+                        if let aux = vm.selectedAuxiliary {
+                            auxiliarySection(aux, showEnergyBars: true)
+                        }
                         if let receipt = vm.selectedReceipt, showingReceipt {
                             receiptSection(receipt)
                         }
@@ -747,6 +792,9 @@ struct GeneralLedgerView: View {
                         LazyVGrid(columns: gridColumns, spacing: 12) {
                             ForEach(Array(story.cards.dropFirst()), content: periodAccountCard)
                         }
+                        if let aux = vm.selectedAuxiliary {
+                            auxiliarySection(aux, showEnergyBars: false)
+                        }
                         coverageSection(story)
                     }
                     .padding(16)
@@ -916,6 +964,123 @@ struct GeneralLedgerView: View {
             chip(DayLabel.short(dayEpoch: day.dayEpoch), color: color, filled: filled)
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: - Auxiliary accounts
+
+    /// The accessory accounts booked alongside the five ledger accounts: the Energy Account, the Focus
+    /// Account (its top apps with horizontal bars), Files Touched and Hosts Contacted figures, and the
+    /// EXPOSURE session/unlock memos. Shaped entirely by `AuxiliaryStory`; this only lays it out. Energy
+    /// per-hour bars show on a single day (`showEnergyBars`) and are omitted for an aggregate period.
+    private func auxiliarySection(_ aux: AuxiliaryStory, showEnergyBars: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("ALSO ON THE BOOKS")
+                    .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(dim)
+                Spacer()
+            }
+            energyCard(aux, showBars: showEnergyBars)
+            focusCard(aux)
+            LazyVGrid(columns: gridColumns, spacing: 12) {
+                auxFigureCard(label: "FILES TOUCHED",
+                              value: aux.filesPresent ? ByteFormatting.grouped(aux.filesTouched) : "—",
+                              present: aux.filesPresent, color: LatticePalette.violet(scheme))
+                auxFigureCard(label: "HOSTS CONTACTED",
+                              value: aux.distinctHosts.map { ByteFormatting.grouped(Int64($0)) } ?? "—",
+                              present: aux.distinctHosts != nil, color: LatticePalette.teal(scheme))
+                auxFigureCard(label: "SESSIONS", value: ByteFormatting.grouped(aux.sessions),
+                              present: true, color: LatticePalette.green(scheme))
+                auxFigureCard(label: "UNLOCKS", value: ByteFormatting.grouped(aux.unlocks),
+                              present: true, color: LatticePalette.green(scheme))
+            }
+        }
+    }
+
+    /// The Energy Account: its watt-hour headline, and on a single day the per-hour amber bars from the
+    /// energy minute buckets. An account that never booked energy reads dim.
+    private func energyCard(_ aux: AuxiliaryStory, showBars: Bool) -> some View {
+        let color = LatticePalette.amber(scheme)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("ENERGY ACCOUNT")
+                    .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(color)
+                Spacer()
+                Text(aux.energyHeadline)
+                    .font(.system(.callout, design: .monospaced).weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(aux.energyPresent ? dial : dim)
+            }
+            if showBars, aux.energyHourly.contains(where: { $0 > 0 }) {
+                channelBars(aux.energyHourly, color: color)
+            } else if !aux.energyPresent {
+                Text("Account not yet opened.")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(dim)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardShape)
+    }
+
+    /// The Focus Account: the top apps by foreground time, each a name, a horizontal bar of its share of
+    /// the leader, and its time. An empty list reads as unopened.
+    private func focusCard(_ aux: AuxiliaryStory) -> some View {
+        let color = LatticePalette.teal(scheme)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("FOCUS ACCOUNT")
+                    .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(color)
+                Spacer()
+            }
+            if aux.focusApps.isEmpty {
+                Text("Account not yet opened.")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(dim)
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(aux.focusApps) { app in
+                        HStack(spacing: 8) {
+                            Text(app.name)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(dial.opacity(0.85))
+                                .lineLimit(1)
+                                .frame(width: 120, alignment: .leading)
+                            mini(fraction: app.fraction, color: color)
+                            Text(app.timeLabel)
+                                .font(.system(.caption2, design: .monospaced))
+                                .monospacedDigit()
+                                .foregroundStyle(dim)
+                                .frame(width: 64, alignment: .trailing)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardShape)
+    }
+
+    /// One small figure card in the accessory grid: a channel-colored label over a right-reading figure,
+    /// dim when the sensor did not report.
+    private func auxFigureCard(label: String, value: String, present: Bool, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                .foregroundStyle(color)
+                .lineLimit(1)
+            Text(value)
+                .font(.system(.callout, design: .monospaced).weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(present ? dial : dim)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardShape)
     }
 
     // MARK: - Empty state

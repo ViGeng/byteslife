@@ -204,4 +204,22 @@ final class DedupTests: XCTestCase {
         XCTAssertEqual(collector.availability, .running)
         collector.stop()
     }
+
+    func testAICollectorSourceStatusesReflectAvailabilityInOrder() throws {
+        let store = try SampleStore(path: dbPath)
+        let claude = FakeSource(id: "Claude Code", available: true)
+        let codex = FakeSource(id: "Codex", available: true)
+        let gemini = FakeSource(id: "Gemini", available: false)
+        let collector = AICollector(store: store, sources: [claude, codex, gemini])
+
+        let statuses = collector.sourceStatuses()
+        XCTAssertEqual(statuses.map(\.displayName), ["Claude Code", "Codex", "Gemini"])
+        XCTAssertEqual(statuses.map(\.isReporting), [true, true, false])
+
+        // The status feeds the source-aware Token Account disclosure directly.
+        XCTAssertEqual(
+            DaySheet.tokenSourceDisclosure(statuses),
+            "Partial: 2 of 3 sources reporting. Claude Code, Codex reporting. Gemini not yet opened."
+        )
+    }
 }

@@ -70,10 +70,56 @@ struct MenuBarView: View {
     private var meterPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             MeterBridgeView(viewModel: viewModel)
+            auxiliaryStrip
             reconcileBar
             Rectangle().fill(LatticePalette.hairline(scheme)).frame(height: 1)
             footer
         }
+    }
+
+    // MARK: - Also on the books
+
+    /// The compact ALSO ON THE BOOKS strip: the day's accessory figures as small card chips (energy, top
+    /// app, files, hosts, unlocks). Figures only, no charts; a sensor that did not report reads as a dim
+    /// dash. Shaped entirely by `AuxiliaryStrip` in the core, so this view only lays the chips out.
+    @ViewBuilder
+    private var auxiliaryStrip: some View {
+        let chips = viewModel.auxiliaryStrip.chips
+        if !chips.isEmpty {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("ALSO ON THE BOOKS")
+                    .font(.system(size: 9, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(LatticePalette.dim(scheme))
+                HStack(spacing: 6) {
+                    ForEach(chips) { auxChip($0) }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func auxChip(_ chip: AuxiliaryChip) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(chip.label)
+                .font(.system(size: 8, design: .monospaced).weight(.medium))
+                .foregroundStyle(LatticePalette.dim(scheme))
+            Text(chip.value)
+                .font(.system(size: 10, design: .monospaced).weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(chip.present ? LatticePalette.dial(scheme) : LatticePalette.dim(scheme))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(LatticePalette.card(scheme))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(LatticePalette.hairline(scheme), lineWidth: 1))
+        )
     }
 
     // MARK: - Receipt strip

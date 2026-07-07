@@ -56,6 +56,8 @@ public enum ReceiptComposer {
     ///   - closedInArrears: true when a past day is being closed after the fact; the receipt then
     ///     stamps POSTED IN ARREARS and ignores `availability`, whose live values describe today,
     ///     not the period being closed.
+    ///   - auxDistinctHosts: distinct remote hosts contacted, for the AUXILIARY section.
+    ///   - auxTopApp: the day's most-focused app (short name and seconds), or nil when none is on file.
     public static func compose(
         dayEpoch: Int64,
         totals: [MetricKind: Int64],
@@ -63,7 +65,9 @@ public enum ReceiptComposer {
         machineName: String,
         marginComment: String,
         calendar: Calendar = .current,
-        closedInArrears: Bool = false
+        closedInArrears: Bool = false,
+        auxDistinctHosts: Int = 0,
+        auxTopApp: (name: String, seconds: Int64)? = nil
     ) -> Receipt {
         let ledger = Ledger(totals: totals)
         let stamp = closedInArrears ? ReceiptStamp.postedInArrears : stamp(for: availability)
@@ -76,6 +80,7 @@ public enum ReceiptComposer {
         body += storageSection(ledger)
         body += hoursSection(ledger)
         body += laborSection(ledger)
+        body += auxiliarySection(totals: totals, distinctHosts: auxDistinctHosts, topApp: auxTopApp)
         body += totalsBlock(ledger)
         body += marginBlock(marginComment)
         body += stampBlock(stamp)
@@ -178,6 +183,27 @@ public enum ReceiptComposer {
             LedgerAccountKind.labor.title.uppercased(),
             entry("Keys Struck", "Dr", ByteFormatting.grouped(account.debit)),
             entry("Distance Hauled", "Dr", ByteFormatting.distanceHauled(milliPixels: ledger.mouseMilliPixels)),
+            thinRule(),
+        ]
+    }
+
+    /// The accessory accounts booked after the five reconciled ones, in the same dry grammar: energy in
+    /// watt-hours, files touched, hosts contacted, unlocks, attention sessions, and the day's top app on
+    /// one line. Figures absent from `totals` book as zero; a missing top app reads as a dash. These lines
+    /// are part of the hashed body, so a receipt simply carries more of them than a v0.6 receipt did.
+    private static func auxiliarySection(
+        totals: [MetricKind: Int64], distinctHosts: Int, topApp: (name: String, seconds: Int64)?
+    ) -> [String] {
+        func t(_ k: MetricKind) -> Int64 { totals[k] ?? 0 }
+        let app = topApp.map { "\($0.name) \(ByteFormatting.duration(seconds: $0.seconds))" } ?? "—"
+        return [
+            "AUXILIARY",
+            entry("Energy", "", ByteFormatting.wattHours(milliwattHours: t(.energyMilliwattHours))),
+            entry("Files Touched", "", ByteFormatting.grouped(t(.filesTouched))),
+            entry("Hosts Contacted", "", ByteFormatting.grouped(Int64(distinctHosts))),
+            entry("Unlocks", "", ByteFormatting.grouped(t(.screenUnlocks))),
+            entry("Sessions", "", ByteFormatting.grouped(t(.attentionSessions))),
+            entry("Top App", "", app),
             thinRule(),
         ]
     }

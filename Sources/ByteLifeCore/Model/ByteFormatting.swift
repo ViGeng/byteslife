@@ -73,6 +73,13 @@ public enum ByteFormatting {
         return "\(oneDecimal(m / 1000)) km"
     }
 
+    /// Formats an energy amount, stored as milliwatt-hours, in watt-hours to one decimal, e.g.
+    /// 12_400 -> "12.4 Wh", 0 -> "0.0 Wh". The Energy Account books its additive deltas in mWh and
+    /// surfaces them in Wh, so the strip chip, the day story, and the receipt all read one figure.
+    public static func wattHours(milliwattHours: Int64) -> String {
+        "\(oneDecimal(Double(max(0, milliwattHours)) / 1000)) Wh"
+    }
+
     /// Formats a duration as hours and minutes, e.g. 12240 -> "3h 24m", 60 -> "1m", 0 -> "0s".
     /// Seconds only appear below one minute; hours always carry an explicit minutes field.
     public static func duration(seconds: Int64) -> String {

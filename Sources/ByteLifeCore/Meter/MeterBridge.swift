@@ -218,10 +218,20 @@ public struct MeterBridge: Equatable, Sendable {
     public let channels: [MeterChannel]
     /// The smoothing and peak-hold state to feed back into the next build.
     public let state: MeterState
+    /// TRAFFIC's rate-axis bucket values (bytes/s), oldest first, bucketed at the HERO window rather than
+    /// the TRAFFIC card's window. The hero flow chart carries its own window selector independent of the
+    /// channel cards, so it reads these instead of the TRAFFIC channel's `rawBars`.
+    public let heroTraffic: [Double]
+    /// STORAGE's rate-axis bucket values (bytes/s), oldest first, bucketed at the hero window, paired with
+    /// `heroTraffic` on the hero chart's one shared byte scale.
+    public let heroStorage: [Double]
 
-    public init(channels: [MeterChannel], state: MeterState) {
+    public init(channels: [MeterChannel], state: MeterState,
+                heroTraffic: [Double] = [], heroStorage: [Double] = []) {
         self.channels = channels
         self.state = state
+        self.heroTraffic = heroTraffic
+        self.heroStorage = heroStorage
     }
 
     /// True when any channel reads live: the panel's LIVE chip and combined-flow line light on this.
@@ -247,20 +257,36 @@ public struct MeterBridge: Equatable, Sendable {
     public static let uncalibratedTag = "UNCALIBRATED"
     /// The tag a source-missing COGNITION channel engraves (no local AI log to read).
     public static let cognitionUncalibratedTag = "UNCALIBRATED — NO LOCAL SRC"
+    /// The tag a needs-permission channel engraves when its permission grant went stale under a changed
+    /// code-signing identity: the tap reports running but delivers nothing, so re-granting is the fix.
+    public static let regrantTag = "RE-GRANT — SIGNATURE CHANGED"
 
     /// Every metric kind the Meter Bridge reads, for the view model to fetch in one `minuteSeries` call.
     public static let trackedKinds: [MetricKind] = MeterChannelKind.allCases.flatMap(\.seriesKinds)
 
     /// Builds the five channels from the current totals snapshot, the previous snapshot (nil on the first
     /// poll), the per-kind minute series, the family availability map, and the prior carry state.
+    /// - Parameter regrantFamilies: families whose needs-permission state is a stale-grant flag rather
+    ///   than a first-time prompt. Such a channel engraves `regrantTag` instead of `uncalibratedTag`,
+    ///   steering the user to re-grant the permission. Empty by default, so callers that never detect a
+    ///   stale grant keep the ordinary UNCALIBRATED tag.
+    /// - Parameter windows: the per-channel history window. A channel absent from the map falls back to
+    ///   the 30M default, so callers that never adjust a window keep the shipped 30 one-minute buckets.
+    /// - Parameter heroWindow: the window the hero flow chart buckets at, independent of the TRAFFIC and
+    ///   STORAGE cards; it drives `heroTraffic` and `heroStorage`.
     public static func build(
         current: MeterSnapshot,
         previous: MeterSnapshot?,
         series: [MetricKind: [Int64]],
         availabilityByFamily: [MetricFamily: Availability],
-        priorState: MeterState
+        priorState: MeterState,
+        regrantFamilies: Set<MetricFamily> = [],
+        windows: [MeterChannelKind: MeterWindow] = [:],
+        heroWindow: MeterWindow = .default
     ) -> MeterBridge {
-        let windowLength = series.values.map(\.count).max() ?? 0
+        // The fetched minute history is oldest-first; each channel reads the most recent slice its own
+        // window spans, so combine to the full fetched length and let the bucketizer take the tail.
+        let seriesLength = series.values.map(\.count).max() ?? 0
 
         var channels: [MeterChannel] = []
         var smoothedOut: [MeterChannelKind: Double] = [:]
@@ -269,11 +295,13 @@ public struct MeterBridge: Equatable, Sendable {
 
         for kind in MeterChannelKind.allCases {
             let availability = availabilityByFamily[kind.family] ?? .disabled
-            let (tag, needsPermission) = calibration(kind: kind, availability: availability)
-            let combined = combine(series: series, kinds: kind.seriesKinds, length: windowLength)
-            let (bars, rawBars, denominator) = normalize(
-                buckets: combined, perSecond: kind.isPerSecond, floor: kind.normalizationFloor
+            let (tag, needsPermission) = calibration(
+                kind: kind, availability: availability, regrant: regrantFamilies.contains(kind.family)
             )
+            let window = windows[kind] ?? .default
+            let minutes = combine(series: series, kinds: kind.seriesKinds, length: seriesLength)
+            let rawBars = rateAxisBuckets(minutes: minutes, kind: kind, window: window)
+            let (bars, denominator) = normalize(rateValues: rawBars, floor: kind.normalizationFloor)
 
             if kind == .exposure {
                 let attentive = current.totals[.screenAttentiveSeconds] ?? 0
@@ -333,16 +361,27 @@ public struct MeterBridge: Equatable, Sendable {
                     ? TokenSplit(payable: current.totals[.aiInputTokens] ?? 0,
                                  receivable: current.totals[.aiOutputTokens] ?? 0)
                     : nil,
-                subline: subline(kind: kind, totals: current.totals, exposureFraction: 0),
+                subline: subline(kind: kind, totals: current.totals, exposureFraction: 0,
+                                 mechanicsPeak: peak),
                 rate: smoothed, rateReadout: readout(kind: kind, rate: smoothed),
                 peak: peak, peakReadout: readout(kind: kind, rate: peak), peakPosition: peakPosition,
                 exposureFraction: 0, exposureReadout: ""
             ))
         }
 
+        // The hero flow chart carries its own window, so bucket TRAFFIC and STORAGE again at `heroWindow`
+        // rather than reusing their card channels, whose windows may differ.
+        let heroTraffic = rateAxisBuckets(
+            minutes: combine(series: series, kinds: MeterChannelKind.traffic.seriesKinds, length: seriesLength),
+            kind: .traffic, window: heroWindow)
+        let heroStorage = rateAxisBuckets(
+            minutes: combine(series: series, kinds: MeterChannelKind.storage.seriesKinds, length: seriesLength),
+            kind: .storage, window: heroWindow)
+
         return MeterBridge(channels: channels,
                            state: MeterState(smoothedRate: smoothedOut, peakRate: peakOut,
-                                             peakSmoothed: peakSmoothedOut))
+                                             peakSmoothed: peakSmoothedOut),
+                           heroTraffic: heroTraffic, heroStorage: heroStorage)
     }
 
     // MARK: - Internals
@@ -359,6 +398,29 @@ public struct MeterBridge: Equatable, Sendable {
         return out
     }
 
+    /// Aggregates a per-minute series into the window's buckets and converts each bucket to the channel's
+    /// rate axis, so floors, normalization, and the peak mark all share one scale regardless of the
+    /// window's zoom. The most recent `window.totalMinutes` minutes are taken (zero-padded at the front
+    /// when history is shorter, so a short history's signal lands in the newest buckets), summed into
+    /// `window.bucketCount` buckets of `window.bucketMinutes`, then divided onto the rate axis:
+    /// per-second channels by the bucket's seconds (bytes/s), per-minute channels by its minutes
+    /// (tokens/min, keys/min). EXPOSURE takes the per-minute path too, and since its floor is one full
+    /// attentive minute, its bar reads attentive seconds per bucket over the bucket's capacity — an
+    /// absolute fraction that never inflates against a busy window.
+    private static func rateAxisBuckets(minutes: [Int64], kind: MeterChannelKind, window: MeterWindow) -> [Double] {
+        let total = window.totalMinutes
+        let recent: [Int64]
+        if minutes.count >= total {
+            recent = Array(minutes.suffix(total))
+        } else {
+            recent = [Int64](repeating: 0, count: total - minutes.count) + minutes
+        }
+        var buckets = [Int64](repeating: 0, count: window.bucketCount)
+        for (i, value) in recent.enumerated() { buckets[i / window.bucketMinutes] += value }
+        let divisor = kind.isPerSecond ? Double(window.bucketMinutes * 60) : Double(window.bucketMinutes)
+        return buckets.map { Double($0) / divisor }
+    }
+
     /// Sums the snapshot delta of the requested kinds between two readings.
     private static func delta(current: MeterSnapshot, previous: MeterSnapshot, kinds: [MetricKind]) -> Int64 {
         var d: Int64 = 0
@@ -366,25 +428,25 @@ public struct MeterBridge: Equatable, Sendable {
         return d
     }
 
-    /// Normalizes the per-minute buckets to 0-1 against the window maximum, floored so an idle window
-    /// stays flat. Per-second channels first divide each bucket by 60 to reach the rate axis the peak
-    /// mark also lives on, so the peak position and the bars share one scale. Returns the bars and the
-    /// denominator (the current full-scale) so the peak can be placed against it.
-    private static func normalize(buckets: [Int64], perSecond: Bool, floor: Double) -> (bars: [Double], rawBars: [Double], denominator: Double) {
-        let rateValues = buckets.map { perSecond ? Double($0) / 60.0 : Double($0) }
+    /// Normalizes the rate-axis bucket values to 0-1 against the window maximum, floored so an idle window
+    /// stays flat. The values already live on the channel's rate axis (see `rateAxisBuckets`), which is
+    /// the same axis the peak mark and the per-channel floor live on, so the bars and the peak position
+    /// share one scale. Returns the bars and the denominator (the current full-scale) for placing the peak.
+    private static func normalize(rateValues: [Double], floor: Double) -> (bars: [Double], denominator: Double) {
         let windowMax = rateValues.max() ?? 0
         let denominator = max(windowMax, floor)
         let bars = rateValues.map { min(1.0, max(0.0, $0 / denominator)) }
-        return (bars, rateValues, denominator)
+        return (bars, denominator)
     }
 
-    /// Maps availability to the engraved tag and the permission affordance flag.
-    private static func calibration(kind: MeterChannelKind, availability: Availability) -> (tag: String?, needsPermission: Bool) {
+    /// Maps availability to the engraved tag and the permission affordance flag. A `regrant` channel in
+    /// the needs-permission state engraves the stale-grant tag instead of the generic UNCALIBRATED.
+    private static func calibration(kind: MeterChannelKind, availability: Availability, regrant: Bool) -> (tag: String?, needsPermission: Bool) {
         switch availability {
         case .running:
             return (nil, false)
         case .needsPermission:
-            return (uncalibratedTag, true)
+            return (regrant ? regrantTag : uncalibratedTag, true)
         case .sourceMissing:
             return (kind == .cognition ? cognitionUncalibratedTag : uncalibratedTag, false)
         case .disabled:
@@ -402,8 +464,11 @@ public struct MeterBridge: Equatable, Sendable {
         }
     }
 
-    /// Today's directional totals sub-line for the channel.
-    private static func subline(kind: MeterChannelKind, totals: [MetricKind: Int64], exposureFraction: Double) -> String {
+    /// Today's directional totals sub-line for the channel. MECHANICS additionally carries the day's
+    /// click count and its live cadence peak (`mechanicsPeak`, the session peak-hold in keys/min), so the
+    /// keyboard-and-mouse channel reads "keys · clicks · peak kpm · distance".
+    private static func subline(kind: MeterChannelKind, totals: [MetricKind: Int64],
+                                exposureFraction: Double, mechanicsPeak: Double = 0) -> String {
         func t(_ k: MetricKind) -> Int64 { totals[k] ?? 0 }
         switch kind {
         case .traffic:
@@ -413,7 +478,10 @@ public struct MeterBridge: Equatable, Sendable {
         case .cognition:
             return "in \(ByteFormatting.tokens(t(.aiInputTokens))) / out \(ByteFormatting.tokens(t(.aiOutputTokens))) tok"
         case .mechanics:
-            return "\(ByteFormatting.grouped(t(.inputKeystrokes))) keys / \(ByteFormatting.distanceHauled(milliPixels: t(.inputMouseMilliPixels)))"
+            return "\(ByteFormatting.grouped(t(.inputKeystrokes))) keys · "
+                + "\(ByteFormatting.grouped(t(.inputClicks))) clicks · "
+                + "peak \(ByteFormatting.keyRate(mechanicsPeak)) · "
+                + "\(ByteFormatting.distanceHauled(milliPixels: t(.inputMouseMilliPixels)))"
         case .exposure:
             return String(format: "%.1f%% of 24h", exposureFraction * 100)
         }

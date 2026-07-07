@@ -138,12 +138,26 @@ public final class ScreenCollector: Collector, @unchecked Sendable {
         )])
     }
 
+    /// Re-evaluates attentiveness and, on a rising edge (inactive to attentive), books one attention
+    /// session. `attentive` starts false, so the first attentive evaluation after start counts as the
+    /// session it opens. Runs on `queue`.
     private func recomputeAttentive(idle: Double) {
+        let wasAttentive = attentive
         attentive = !systemAsleep
             && !screenAsleep
             && !screenLocked
             && sessionActive
             && idle < idleThreshold
+        if attentive, !wasAttentive {
+            try? store.record([Sample(kind: .attentionSessions, value: 1, timestamp: now())])
+        }
+    }
+
+    /// Handles a screen unlock: books one unlock, then clears the lock flag through the normal
+    /// flush-mutate-recompute path so the interval before the unlock is settled first. Runs on `queue`.
+    func handleUnlock() {
+        try? store.record([Sample(kind: .screenUnlocks, value: 1, timestamp: now())])
+        setFlag { $0.screenLocked = false }
     }
 
     // MARK: - Notifications
@@ -171,7 +185,7 @@ public final class ScreenCollector: Collector, @unchecked Sendable {
         tokens.append(workspace(NSWorkspace.sessionDidResignActiveNotification) { [weak self] in self?.setFlag { $0.sessionActive = false } })
         tokens.append(workspace(NSWorkspace.sessionDidBecomeActiveNotification) { [weak self] in self?.setFlag { $0.sessionActive = true } })
         tokens.append(lockNote("com.apple.screenIsLocked") { [weak self] in self?.setFlag { $0.screenLocked = true } })
-        tokens.append(lockNote("com.apple.screenIsUnlocked") { [weak self] in self?.setFlag { $0.screenLocked = false } })
+        tokens.append(lockNote("com.apple.screenIsUnlocked") { [weak self] in self?.handleUnlock() })
 
         lock.lock()
         observers = tokens

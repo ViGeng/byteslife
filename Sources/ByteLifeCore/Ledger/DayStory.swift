@@ -59,11 +59,14 @@ public struct DayStory: Equatable, Sendable {
     public static let hourlyKinds: [MetricKind] = LedgerAccountKind.allCases.flatMap(kinds(for:))
 
     /// Builds the story from the day's totals and its per-kind 24-hour series. Kinds absent from either
-    /// input read as zero, so an empty day yields a structurally complete, all-zero story.
+    /// input read as zero, so an empty day yields a structurally complete, all-zero story. A `cadence`
+    /// supplied for a single day adds the day's typing rhythm to the Labor card as two memo lines;
+    /// aggregate periods pass none, so cadence is a day-granularity figure only.
     public static func build(
         dayEpoch: Int64,
         totals: [MetricKind: Int64],
-        hourly: [MetricKind: [Int64]]
+        hourly: [MetricKind: [Int64]],
+        cadence: TypingCadence? = nil
     ) -> DayStory {
         let ledger = Ledger(totals: totals)
         // Reuse the live day sheet's line logic verbatim; a historical read has no availability badges.
@@ -77,6 +80,10 @@ public struct DayStory: Equatable, Sendable {
             if kind == .hours {
                 lines.append(DaySheetLine(label: "Percent of day",
                                           value: percentOfDay(seconds: account.debit), side: .memo))
+            }
+            // The Labor card carries the day's typing rhythm as two memo lines when a cadence is supplied.
+            if kind == .labor, let cadence {
+                lines.append(contentsOf: cadenceLines(cadence))
             }
             return DayStoryCard(
                 kind: kind,
@@ -136,5 +143,15 @@ public struct DayStory: Equatable, Sendable {
     /// Attentive seconds as a percentage of a 24-hour day, one decimal, e.g. 24120 -> "27.9%".
     private static func percentOfDay(seconds: Int64) -> String {
         String(format: "%.1f%%", Double(max(0, seconds)) / 864.0)
+    }
+
+    /// The typing-rhythm memo lines for the Labor card: the busiest minute's keystrokes and the mean over
+    /// active minutes, both in keys per minute. Pure, so the shaping is covered by `swift test`.
+    static func cadenceLines(_ cadence: TypingCadence) -> [DaySheetLine] {
+        [
+            DaySheetLine(label: "Peak cadence", value: "\(cadence.peakKeysPerMinute) kpm", side: .memo),
+            DaySheetLine(label: "Avg cadence",
+                         value: "\(Int(cadence.averageKeysPerActiveMinute.rounded())) kpm", side: .memo),
+        ]
     }
 }

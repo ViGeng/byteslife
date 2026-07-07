@@ -453,6 +453,26 @@ public final class SampleStore: @unchecked Sendable {
         }
     }
 
+    /// The per-minute values for a single kind on a single day, in ascending minute order. Only minutes
+    /// that carried a sample appear (absent minutes are omitted, never zero-filled), which is exactly what
+    /// the typing-cadence model reads: keystroke cells are only ever written with a positive value, so the
+    /// result is the day's non-zero keystroke minutes. One indexed range query over the day's contiguous
+    /// rows on the (day_epoch, minute, kind) primary key, never a full-table scan. Feeds `TypingCadence`
+    /// on the Back Office day story.
+    public func dayMinuteSeries(kind: MetricKind, dayEpoch: Int64) throws -> [Int64] {
+        try queue.sync {
+            let stmt = try prepare("""
+                SELECT value FROM samples
+                WHERE day_epoch = ? AND kind = ?
+                ORDER BY minute ASC;
+                """)
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            bindText(stmt, 2, kind.rawValue)
+            return try collectInt64Column(stmt)
+        }
+    }
+
     // MARK: - Reconciliations
 
     /// Posts a day's immutable receipt. Because `day_epoch` is the primary key, a second attempt on an
@@ -526,6 +546,146 @@ public final class SampleStore: @unchecked Sendable {
                 let rc = sqlite3_step(stmt)
                 if rc == SQLITE_ROW {
                     result[sqlite3_column_int64(stmt, 0)] = columnText(stmt, 1)
+                } else if rc == SQLITE_DONE {
+                    break
+                } else {
+                    throw SQLiteError.from(db: db, code: rc)
+                }
+            }
+            return result
+        }
+    }
+
+    // MARK: - Focus (per-app attention)
+
+    /// UPSERT-accumulates `seconds` of foreground attention for `bundleId` on `dayEpoch`. The focus
+    /// table carries the per-app dimension the single-dimensional samples table cannot, so App Focus
+    /// posts here rather than through `record`. Non-positive seconds are a no-op.
+    public func recordFocus(dayEpoch: Int64, bundleId: String, seconds: Int64) throws {
+        guard seconds > 0 else { return }
+        try queue.sync {
+            let stmt = try prepare("""
+                INSERT INTO focus (day_epoch, bundle_id, seconds) VALUES (?, ?, ?)
+                ON CONFLICT (day_epoch, bundle_id) DO UPDATE SET seconds = seconds + excluded.seconds;
+                """)
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            bindText(stmt, 2, bundleId)
+            sqlite3_bind_int64(stmt, 3, seconds)
+            let rc = sqlite3_step(stmt)
+            guard rc == SQLITE_DONE else { throw SQLiteError.from(db: db, code: rc) }
+        }
+    }
+
+    /// The day's most-focused apps, highest seconds first, capped at `limit`. Feeds the day story's
+    /// top-apps memo and the panel's top-app chip.
+    public func topFocus(dayEpoch: Int64, limit: Int) throws -> [(bundleId: String, seconds: Int64)] {
+        guard limit > 0 else { return [] }
+        return try queue.sync {
+            let stmt = try prepare("""
+                SELECT bundle_id, seconds FROM focus
+                WHERE day_epoch = ?
+                ORDER BY seconds DESC, bundle_id ASC
+                LIMIT ?;
+                """)
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            sqlite3_bind_int(stmt, 2, Int32(limit))
+            var result: [(bundleId: String, seconds: Int64)] = []
+            while true {
+                let rc = sqlite3_step(stmt)
+                if rc == SQLITE_ROW {
+                    result.append((columnText(stmt, 0), sqlite3_column_int64(stmt, 1)))
+                } else if rc == SQLITE_DONE {
+                    break
+                } else {
+                    throw SQLiteError.from(db: db, code: rc)
+                }
+            }
+            return result
+        }
+    }
+
+    /// Per-app focus seconds for each day in `days`, grouped by day and bundle id, in one query. Feeds the
+    /// Back Office aggregate story, which merges the per-day rows into a period-wide top list in memory.
+    /// Days and apps absent from the `focus` table are absent from the result rather than zero.
+    public func focus(forDayEpochs days: [Int64]) throws -> [Int64: [String: Int64]] {
+        guard !days.isEmpty else { return [:] }
+        return try queue.sync {
+            let placeholders = Array(repeating: "?", count: days.count).joined(separator: ",")
+            let stmt = try prepare("""
+                SELECT day_epoch, bundle_id, seconds FROM focus
+                WHERE day_epoch IN (\(placeholders));
+                """)
+            defer { sqlite3_finalize(stmt) }
+            for (i, day) in days.enumerated() { sqlite3_bind_int64(stmt, Int32(i + 1), day) }
+            var result: [Int64: [String: Int64]] = [:]
+            while true {
+                let rc = sqlite3_step(stmt)
+                if rc == SQLITE_ROW {
+                    let day = sqlite3_column_int64(stmt, 0)
+                    result[day, default: [:]][columnText(stmt, 1)] = sqlite3_column_int64(stmt, 2)
+                } else if rc == SQLITE_DONE {
+                    break
+                } else {
+                    throw SQLiteError.from(db: db, code: rc)
+                }
+            }
+            return result
+        }
+    }
+
+    // MARK: - Hosts seen (distinct remote hosts)
+
+    /// Records a salted host hash for `dayEpoch`, returning `true` when it was newly seen that day.
+    /// The hash is the only thing stored; the hostname is never persisted. Distinct-per-day is enforced
+    /// by the composite primary key, so the caller can treat a `true` return as one new distinct host.
+    @discardableResult
+    public func markHostSeen(dayEpoch: Int64, hash: String) throws -> Bool {
+        try queue.sync {
+            let stmt = try prepare(
+                "INSERT OR IGNORE INTO hosts_seen (day_epoch, host_hash) VALUES (?, ?);"
+            )
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            bindText(stmt, 2, hash)
+            let rc = sqlite3_step(stmt)
+            guard rc == SQLITE_DONE else { throw SQLiteError.from(db: db, code: rc) }
+            return sqlite3_changes(db) > 0
+        }
+    }
+
+    /// The number of distinct remote hosts seen on `dayEpoch`, the Hosts Contacted metric.
+    public func distinctHosts(dayEpoch: Int64) throws -> Int {
+        try queue.sync {
+            let stmt = try prepare("SELECT COUNT(*) FROM hosts_seen WHERE day_epoch = ?;")
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            let rc = sqlite3_step(stmt)
+            guard rc == SQLITE_ROW else { throw SQLiteError.from(db: db, code: rc) }
+            return Int(sqlite3_column_int64(stmt, 0))
+        }
+    }
+
+    /// The distinct-host count for each day in `days`, in one grouped query. Feeds the Back Office
+    /// aggregate story, whose Hosts Contacted figure sums the per-day distinct counts. Days with no
+    /// sightings are absent from the result rather than zero.
+    public func distinctHosts(forDayEpochs days: [Int64]) throws -> [Int64: Int] {
+        guard !days.isEmpty else { return [:] }
+        return try queue.sync {
+            let placeholders = Array(repeating: "?", count: days.count).joined(separator: ",")
+            let stmt = try prepare("""
+                SELECT day_epoch, COUNT(*) FROM hosts_seen
+                WHERE day_epoch IN (\(placeholders))
+                GROUP BY day_epoch;
+                """)
+            defer { sqlite3_finalize(stmt) }
+            for (i, day) in days.enumerated() { sqlite3_bind_int64(stmt, Int32(i + 1), day) }
+            var result: [Int64: Int] = [:]
+            while true {
+                let rc = sqlite3_step(stmt)
+                if rc == SQLITE_ROW {
+                    result[sqlite3_column_int64(stmt, 0)] = Int(sqlite3_column_int64(stmt, 1))
                 } else if rc == SQLITE_DONE {
                     break
                 } else {

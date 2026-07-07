@@ -30,6 +30,28 @@ final class InputCollectorTests: XCTestCase {
         XCTAssertEqual(drained.keystrokes, 0)
     }
 
+    func testClicksAndScrollsAccumulateAndDrainResets() {
+        let context = TapContext()
+        context.addClick()
+        context.addClick()
+        context.addScroll(units: 12)
+        context.addScroll(units: 8)
+        // A non-positive scroll event contributes nothing.
+        context.addScroll(units: 0)
+
+        let first = context.drain()
+        XCTAssertEqual(first.clicks, 2)
+        XCTAssertEqual(first.scrollUnits, 20)
+        // The other counters stay independent.
+        XCTAssertEqual(first.keystrokes, 0)
+        XCTAssertEqual(first.mouseMilliPixels, 0)
+
+        // Draining zeroes the new counters too.
+        let second = context.drain()
+        XCTAssertEqual(second.clicks, 0)
+        XCTAssertEqual(second.scrollUnits, 0)
+    }
+
     func testConcurrentIncrementsAreAllCountedUnderTheLock() {
         let context = TapContext()
         let iterations = 20_000
@@ -110,5 +132,118 @@ final class InputCollectorTests: XCTestCase {
         collector.start()
         XCTAssertEqual(collector.availability, .needsPermission)
         collector.stop()
+    }
+
+    func testTapSuspectStaleIsFalseByDefault() throws {
+        let (store, directory) = try TempStore.make()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let collector = InputCollector(store: store, preflight: { false })
+        XCTAssertFalse(collector.tapSuspectStale)
+    }
+
+    /// The stale-tap end-to-end path: the grant is present and the tap reports running (both injected,
+    /// since a real `CGEventTap` cannot reach the silent state without a TCC grant), but the injected
+    /// totals show attentive time climbing with zero input. The detector must flag the tap, drop the
+    /// collector to needs-permission, and raise the re-grant suspicion; once input resumes it recovers.
+    func testStaleTapFlagsRegrantThenRecoversWhenInputResumes() throws {
+        let (store, directory) = try TempStore.make()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // A thread-safe cumulative-totals source read once per recheck. Attentive climbs 60s each
+        // interval; input stays flat until `inputFlowing` flips, simulating a running-but-silent tap
+        // and then a recovered one.
+        let lock = NSLock()
+        var attentive: Int64 = 0
+        var input: Int64 = 0
+        var inputFlowing = false
+        let provider: () -> (inputEvents: Int64, attentiveSeconds: Int64) = {
+            lock.lock(); defer { lock.unlock() }
+            attentive += 60
+            if inputFlowing { input += 100 }
+            return (input, attentive)
+        }
+
+        let collector = InputCollector(
+            store: store,
+            drainInterval: .milliseconds(50),
+            recheckInterval: .milliseconds(10),
+            preflight: { true },
+            healthTotalsProvider: provider,
+            tapStarter: { true }
+        )
+        collector.start()
+        // The tap looks live and delivering on the first frame.
+        XCTAssertEqual(collector.availability, .running)
+
+        // Three attentive minutes of zero input trip the flag within a handful of 10ms rechecks.
+        let flagged = expectation(description: "stale tap flagged")
+        pollUntil(flagged) {
+            collector.tapSuspectStale && collector.availability == .needsPermission
+        }
+        wait(for: [flagged], timeout: 3)
+
+        // Events resume: the flag clears and availability returns to running.
+        lock.lock(); inputFlowing = true; lock.unlock()
+        let recovered = expectation(description: "recovered")
+        pollUntil(recovered) {
+            !collector.tapSuspectStale && collector.availability == .running
+        }
+        wait(for: [recovered], timeout: 3)
+
+        collector.stop()
+    }
+
+    /// The mouse-only-use guard: against the real store and the DEFAULT health-totals provider, attentive
+    /// seconds and mouse travel climb together while keys, clicks, and scrolls never move. Because those
+    /// three never move, the only signal that can keep the tap trusted is folded-in mouse travel; if the
+    /// provider ignored it the detector would latch suspect after three attentive minutes and, with no
+    /// keys/clicks/scrolls ever resuming, never recover. So a false flag here would still read suspect at
+    /// the end, which makes the final assertion a reliable discriminator.
+    func testMouseOnlyAttentiveUseNeverFlagsWithDefaultProvider() throws {
+        let (store, directory) = try TempStore.make()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let now = Date()
+        let collector = InputCollector(
+            store: store,
+            drainInterval: .milliseconds(50),
+            recheckInterval: .milliseconds(10),
+            preflight: { true },
+            tapStarter: { true }
+        )
+        collector.start()
+        defer { collector.stop() }
+
+        // Each step books a minute of attention and some mouse travel in one transaction, so any recheck
+        // reads a consistent snapshot. Spread across the collector's rechecks, this climbs far past the
+        // 180s zero-input threshold while keys, clicks, and scrolls stay flat.
+        let climbed = expectation(description: "attentive climbed past threshold")
+        var steps = 0
+        func drive() {
+            try? store.record([
+                Sample(kind: .screenAttentiveSeconds, value: 60, timestamp: now),
+                Sample(kind: .inputMouseMilliPixels, value: 5_000, timestamp: now),
+            ])
+            steps += 1
+            if steps >= 20 { climbed.fulfill(); return }
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(15)) { drive() }
+        }
+        drive()
+        wait(for: [climbed], timeout: 5)
+
+        XCTAssertFalse(collector.tapSuspectStale, "a live mouse must keep the tap trusted")
+        XCTAssertEqual(collector.availability, .running)
+    }
+
+    /// Polls `condition` off the main thread every 10ms, fulfilling `expectation` once it holds. The
+    /// collector's availability and suspect flag are lock-guarded, so a cross-thread poll reads them
+    /// safely.
+    private func pollUntil(_ expectation: XCTestExpectation, _ condition: @escaping () -> Bool) {
+        func check() {
+            if condition() { expectation.fulfill(); return }
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(10)) { check() }
+        }
+        check()
     }
 }

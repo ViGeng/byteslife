@@ -30,15 +30,17 @@ public enum LedgerAccountKind: String, CaseIterable, Sendable {
         }
     }
 
-    /// The account a collector family posts to. One-to-one with `family`, so a short collector maps
-    /// cleanly onto the account named in a FLAGGED receipt.
-    public init(family: MetricFamily) {
+    /// The account a collector family posts to. One-to-one with the five flagship families, so a short
+    /// collector maps cleanly onto the account named in a FLAGGED receipt. The `auxiliary` family has no
+    /// ledger account (its sensors are booked but never reconciled), so it returns nil.
+    public init?(family: MetricFamily) {
         switch family {
         case .ai: self = .token
         case .network: self = .traffic
         case .disk: self = .storage
         case .screen: self = .hours
         case .input: self = .labor
+        case .auxiliary: return nil
         }
     }
 }

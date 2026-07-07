@@ -57,6 +57,15 @@ final class ByteFormattingTests: XCTestCase {
         XCTAssertEqual(ByteFormatting.duration(seconds: -5), "0s")
     }
 
+    // MARK: watt-hours
+
+    func testWattHours() {
+        XCTAssertEqual(ByteFormatting.wattHours(milliwattHours: 0), "0.0 Wh")
+        XCTAssertEqual(ByteFormatting.wattHours(milliwattHours: 12_400), "12.4 Wh")
+        XCTAssertEqual(ByteFormatting.wattHours(milliwattHours: 500), "0.5 Wh")
+        XCTAssertEqual(ByteFormatting.wattHours(milliwattHours: -5), "0.0 Wh")
+    }
+
     // MARK: pixel distance
 
     func testPixelDistance() {

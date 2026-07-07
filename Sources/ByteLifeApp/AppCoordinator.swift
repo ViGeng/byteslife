@@ -20,8 +20,15 @@ final class AppCoordinator {
 
     let store: SampleStore
     let registry: CollectorRegistry
+    /// The accessory sensors (energy, app focus, files touched, distinct hosts). They live in their own
+    /// registry, kept out of the flagship snapshot the reconciler stamps from, so a sensor that is
+    /// legitimately absent (energy on a battery-less desktop, hosts when nettop cannot run) never marks a
+    /// receipt FLAGGED. The surfaces read their availability from here.
+    let auxiliaryRegistry: CollectorRegistry
     /// Retained so the UI can raise the Input Monitoring prompt from an explicit user action.
     let inputCollector: InputCollector
+    /// Retained so the Token Account disclosure can read which AI sources are reporting.
+    let aiCollector: AICollector
     /// Closes the day's books, composing and posting the immutable receipt. All the real work lives in
     /// ByteLifeCore; the coordinator only supplies the machine name and the live collector states.
     let reconciler: Reconciler
@@ -39,6 +46,7 @@ final class AppCoordinator {
         }
 
         let ai = AICollector(store: store)
+        aiCollector = ai
         let network = NetworkCollector(store: store)
         let disk = DiskCollector(store: store)
         let screen = ScreenCollector(store: store)
@@ -48,8 +56,19 @@ final class AppCoordinator {
         // Registration order is the UI's row order via the availability snapshot; it matches
         // MetricFamily.allCases so the view model and the registry agree.
         registry = CollectorRegistry(collectors: [ai, network, disk, screen, input])
+
+        // The accessory sensors. The files collector excludes ByteLife's own data directory, which sits
+        // under ~/Library and is therefore already covered by the default ~/Library exclusion.
+        let appDataDir = Self.databaseURL().deletingLastPathComponent().path
+        let energy = EnergyCollector(store: store)
+        let focus = AppFocusCollector(store: store)
+        let files = FilesTouchedCollector(store: store, appDataDir: appDataDir)
+        let hosts = HostsSeenCollector(store: store)
+        auxiliaryRegistry = CollectorRegistry(collectors: [energy, focus, files, hosts])
+
         reconciler = Reconciler(store: store)
         registry.startAll()
+        auxiliaryRegistry.startAll()
     }
 
     /// Closes today's books, posting the receipt exactly once. Returns the stored reconciliation, or

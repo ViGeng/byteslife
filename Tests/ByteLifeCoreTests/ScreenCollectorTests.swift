@@ -136,4 +136,48 @@ final class ScreenCollectorTests: XCTestCase {
         collector.start()
         collector.stop()
     }
+
+    private func sessions() throws -> Int64 {
+        try store.totals(forDayEpoch: dayEpoch)[.attentionSessions] ?? 0
+    }
+
+    func testAttentionSessionsCountEachRisingEdgeIntoAttentiveness() throws {
+        var idle: Double = 0
+        var nanos: UInt64 = 0
+        let collector = ScreenCollector(
+            store: store,
+            idleThreshold: 300,
+            idleSeconds: { idle },
+            clock: { nanos },
+            now: { self.timestamp }
+        )
+
+        collector.prime()                  // inactive -> attentive: session 1
+        XCTAssertEqual(try sessions(), 1)
+
+        idle = 400; nanos = 60_000_000_000
+        collector.tick()                   // attentive -> inactive: no new session
+        XCTAssertEqual(try sessions(), 1)
+
+        idle = 0; nanos = 120_000_000_000
+        collector.tick()                   // inactive -> attentive: session 2
+        XCTAssertEqual(try sessions(), 2)
+
+        nanos = 180_000_000_000
+        collector.tick()                   // stays attentive: no new session
+        XCTAssertEqual(try sessions(), 2)
+    }
+
+    func testScreenUnlocksAreCounted() throws {
+        let collector = ScreenCollector(
+            store: store,
+            idleSeconds: { 0 },
+            clock: { 0 },
+            now: { self.timestamp }
+        )
+        collector.prime()
+        collector.handleUnlock()
+        collector.handleUnlock()
+        XCTAssertEqual(try store.totals(forDayEpoch: dayEpoch)[.screenUnlocks] ?? 0, 2)
+    }
 }

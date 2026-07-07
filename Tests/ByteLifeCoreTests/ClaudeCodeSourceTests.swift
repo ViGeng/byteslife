@@ -46,6 +46,19 @@ final class ClaudeCodeSourceTests: XCTestCase {
         samples.filter { $0.kind == .aiInputTokens }.reduce(0) { $0 + $1.value }
     }
 
+    /// Backdates a file's modification time, faking a historical transcript outside the watch window.
+    private func setModificationDate(_ path: String, _ date: Date) throws {
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: path)
+    }
+
+    private var longAgo: Date { Date().addingTimeInterval(-3 * 24 * 60 * 60) }
+
+    /// The store totals for a day are only exposed via the store, so read input tokens straight from it.
+    private func storedInputTokens(_ store: SampleStore) throws -> Int64 {
+        let epoch = DayBucket.dayEpoch(for: ISO8601DateFormatter().date(from: "2026-07-06T12:00:00Z")!)
+        return try store.totals(forDayEpoch: epoch)[.aiInputTokens] ?? 0
+    }
+
     func testFileWatcherRemovedWhenFileDeleted() throws {
         let store = try SampleStore(path: dbPath)
         let source = ClaudeCodeSource(root: root, store: store)
@@ -96,6 +109,55 @@ final class ClaudeCodeSourceTests: XCTestCase {
         // is deduped, so the running total is 3600, not 3700. And the watcher is reinstalled.
         XCTAssertEqual(inputTokens(recorded), 3600)
         XCTAssertTrue(source.watchedFilePaths.contains(sessionPath))
+    }
+
+    func testOldFileIsIngestedButNotWatched() throws {
+        let store = try SampleStore(path: dbPath)
+        try setModificationDate(sessionPath, longAgo)   // a historical transcript, outside the watch window
+        let source = ClaudeCodeSource(root: root, store: store)
+        source.start { _ in }
+        defer { source.stop() }
+
+        // Backfilled once (100 + 200 + 300, the duplicate pair deduped) but not watched.
+        XCTAssertEqual(try storedInputTokens(store), 600)
+        XCTAssertFalse(source.watchedFilePaths.contains(sessionPath))
+    }
+
+    func testRecentFileIsIngestedAndWatched() throws {
+        // The default fixture was just written, so its mtime is within the recency window: it earns both.
+        let store = try SampleStore(path: dbPath)
+        let source = ClaudeCodeSource(root: root, store: store)
+        source.start { _ in }
+        defer { source.stop() }
+
+        XCTAssertEqual(try storedInputTokens(store), 600)
+        XCTAssertTrue(source.watchedFilePaths.contains(sessionPath))
+    }
+
+    func testOldFileThatGrowsIsReingestedOnNextDiscovery() throws {
+        let store = try SampleStore(path: dbPath)
+        try setModificationDate(sessionPath, longAgo)
+        let source = ClaudeCodeSource(root: root, store: store)
+        var recorded: [Sample] = []
+        source.start { recorded.append(contentsOf: $0) }
+        defer { source.stop() }
+        XCTAssertEqual(try storedInputTokens(store), 600)
+
+        // The historical file grows: a new assistant turn appended adds 500 input tokens.
+        let appended = "{\"type\":\"assistant\",\"sessionId\":\"S1\",\"requestId\":\"R9\",\"uuid\":\"U9\",\"timestamp\":\"2026-07-06T12:00:00.000Z\",\"message\":{\"id\":\"M9\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":500,\"output_tokens\":50}}}\n"
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: sessionPath))
+        handle.seekToEndOfFile()
+        handle.write(appended.data(using: .utf8)!)
+        try handle.close()
+        // Keep it backdated so the size-grew re-check path (not a watcher) drives the re-ingest.
+        try setModificationDate(sessionPath, longAgo)
+
+        recorded.removeAll()
+        source.rediscover()
+
+        XCTAssertEqual(try storedInputTokens(store), 1_100)
+        XCTAssertEqual(inputTokens(recorded), 500)
+        XCTAssertFalse(source.watchedFilePaths.contains(sessionPath))
     }
 
     func testStartPrunesMetaForVanishedFiles() throws {

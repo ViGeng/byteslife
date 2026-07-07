@@ -9,6 +9,18 @@ public enum LedgerSide: Sendable, Equatable {
     case memo
 }
 
+/// One AI source's reporting state for the Token Account's source-aware disclosure: its display name
+/// and whether its local logs are present on this machine.
+public struct AISourceStatus: Equatable, Sendable {
+    public let displayName: String
+    public let isReporting: Bool
+
+    public init(displayName: String, isReporting: Bool) {
+        self.displayName = displayName
+        self.isReporting = isReporting
+    }
+}
+
 /// One printed line inside an account block: a label, its formatted figure, and the column it posts to.
 public struct DaySheetLine: Equatable, Sendable, Identifiable {
     public let label: String
@@ -70,16 +82,37 @@ public struct DaySheet: Equatable, Sendable {
     /// The disclosure a source-missing account shows: an unopened book rather than a broken feature.
     public static let notYetOpened = "Account not yet opened."
 
-    /// The Token Account's standing disclosure in v1, where only Claude Code's local logs report and
-    /// every other AI tool is honestly an account not yet opened.
+    /// The Token Account's fallback disclosure when no per-source status is supplied (chiefly tests).
+    /// Production always passes the live `aiSources`, which yields the source-aware disclosure instead.
     public static let partialTokenSources = "Partial: Claude Code reporting. Other tools not yet opened."
 
-    /// Builds the day sheet from the day's totals, each family's availability, and today's reconciliation
-    /// (nil when the day is still open).
+    /// The Token Account's source-aware disclosure from the AI sources' reporting states, or nil when no
+    /// statuses are supplied. When every source reports, it names them all; when some report, it lists
+    /// the reporting ones and the ones not yet opened; when none report, the account reads as unopened
+    /// (handled by availability, so this returns `notYetOpened`).
+    public static func tokenSourceDisclosure(_ sources: [AISourceStatus]) -> String? {
+        guard !sources.isEmpty else { return nil }
+        let reporting = sources.filter { $0.isReporting }.map(\.displayName)
+        let missing = sources.filter { !$0.isReporting }.map(\.displayName)
+        if missing.isEmpty {
+            return "All \(sources.count) sources reporting: \(reporting.joined(separator: ", "))."
+        }
+        if reporting.isEmpty {
+            return notYetOpened
+        }
+        return "Partial: \(reporting.count) of \(sources.count) sources reporting. "
+            + "\(reporting.joined(separator: ", ")) reporting. "
+            + "\(missing.joined(separator: ", ")) not yet opened."
+    }
+
+    /// Builds the day sheet from the day's totals, each family's availability, today's reconciliation
+    /// (nil when the day is still open), and the AI sources' per-source reporting states (empty keeps the
+    /// legacy fixed Token Account disclosure, for callers and tests that do not supply source status).
     public static func build(
         totals: [MetricKind: Int64],
         availabilityByFamily: [MetricFamily: Availability],
-        reconciliation: Reconciliation?
+        reconciliation: Reconciliation?,
+        aiSources: [AISourceStatus] = []
     ) -> DaySheet {
         let ledger = Ledger(totals: totals)
 
@@ -89,7 +122,7 @@ public struct DaySheet: Equatable, Sendable {
                 kind: kind,
                 lines: lines(for: kind, ledger: ledger),
                 availability: availability,
-                disclosure: disclosure(for: kind, availability: availability)
+                disclosure: disclosure(for: kind, availability: availability, aiSources: aiSources)
             )
         }
 
@@ -143,11 +176,17 @@ public struct DaySheet: Equatable, Sendable {
         }
     }
 
-    private static func disclosure(for kind: LedgerAccountKind, availability: Availability) -> String? {
+    private static func disclosure(
+        for kind: LedgerAccountKind,
+        availability: Availability,
+        aiSources: [AISourceStatus]
+    ) -> String? {
         switch availability {
         case .running:
-            // The Token Account is always partial in v1 even when reporting, so it discloses that.
-            return kind == .token ? partialTokenSources : nil
+            // The Token Account discloses which AI sources report; the source-aware string is used when
+            // live statuses are supplied, otherwise the legacy fixed string.
+            guard kind == .token else { return nil }
+            return tokenSourceDisclosure(aiSources) ?? partialTokenSources
         case .sourceMissing:
             return notYetOpened
         case .needsPermission:

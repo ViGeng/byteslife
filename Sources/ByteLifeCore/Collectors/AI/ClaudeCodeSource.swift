@@ -16,12 +16,16 @@ extension SampleStore: AIUsageStore {}
 /// additive samples through the store's atomic `ingest`.
 ///
 /// All mutable state lives behind one serial `queue`. The directory-level vnode watchers rediscover
-/// project folders and session files as they appear; each file's own vnode watcher drives tailing and
-/// tears itself down when its file is deleted or renamed. Per-file byte offset and inode persist in
+/// project folders and session files as they appear. Only a file modified within
+/// `AISourceWatch.recencyWindow` earns a persistent per-file vnode watcher (which drives its tailing and
+/// tears itself down when the file is deleted or renamed); an older file gets none and is re-tailed on
+/// each discovery pass only when a cheap `stat` shows it grew, so a machine with hundreds of historical
+/// transcripts stays well under its file-descriptor limit. Per-file byte offset and inode persist in
 /// store meta, so restarts resume exactly where they left off, and every watcher file descriptor
 /// closes in its cancel handler.
 public final class ClaudeCodeSource: AIUsageSource, @unchecked Sendable {
     public let id = "ai.claudeCode"
+    public var displayName: String { "Claude Code" }
 
     private let root: URL
     private let store: AIUsageStore
@@ -142,14 +146,36 @@ public final class ClaudeCodeSource: AIUsageSource, @unchecked Sendable {
             ) else { continue }
 
             for file in files where file.pathExtension == "jsonl" {
-                let path = file.path
-                guard fileWatchers[path] == nil else { continue }
-                installFileWatcher(path)
-                // First discovery of an existing file ingests from offset 0; dedup makes the
-                // historical backfill safe and intentional.
-                ingestLocked(path: path)
+                discoverFileLocked(path: file.path)
             }
         }
+    }
+
+    /// Handles one discovered transcript file. A file modified within the recency window earns a
+    /// persistent vnode watcher (installed once) that drives its tailing thereafter; an older file gets
+    /// no watcher, so a machine holding hundreds of historical transcripts never exhausts its file
+    /// descriptors, and is instead re-tailed here whenever a cheap size check shows it grew past the
+    /// consumed offset. Every file is still ingested at least once, since a first discovery has offset 0
+    /// and any non-empty file reads as grown. Must run on `queue`.
+    private func discoverFileLocked(path: String) {
+        // Already watched (a recent file discovered earlier): its own watcher drives tailing.
+        guard fileWatchers[path] == nil else { return }
+        if AISourceWatch.isRecent(path: path) {
+            installFileWatcher(path)
+            // Dedup makes the historical backfill safe and intentional.
+            ingestLocked(path: path)
+        } else {
+            ingestIfGrewLocked(path: path)
+        }
+    }
+
+    /// Re-tails an unwatched historical file only when its on-disk size has grown past the byte offset
+    /// already consumed, so a file that never changes costs one `stat` per discovery pass and no ingest.
+    /// A first discovery has offset 0, so any non-empty file is ingested exactly once. Must run on `queue`.
+    private func ingestIfGrewLocked(path: String) {
+        let offset = offsets[path] ?? metaInt(Self.offsetKey(forPath: path)) ?? 0
+        guard let size = AISourceWatch.fileSize(path: path), size > offset else { return }
+        ingestLocked(path: path)
     }
 
     /// Cancels and drops any file or project watcher whose path has vanished, closing its descriptor.

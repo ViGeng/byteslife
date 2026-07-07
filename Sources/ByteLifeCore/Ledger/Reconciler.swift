@@ -34,6 +34,12 @@ public struct Reconciler {
         let totals = try store.totals(forDayEpoch: dayEpoch)
         let trailing = try trailingTotals(before: dayEpoch)
         let comment = MarginNotes.comment(today: totals, trailing: trailing)
+        // The accessory figures the AUXILIARY section books: distinct hosts and the day's top app come
+        // from their own tables (the samples dictionary cannot carry the per-app or per-host dimension).
+        let distinctHosts = (try? store.distinctHosts(dayEpoch: dayEpoch)) ?? 0
+        let topApp = (try? store.topFocus(dayEpoch: dayEpoch, limit: 1))?.first.map {
+            (name: AppShortName.short(bundleID: $0.bundleId), seconds: $0.seconds)
+        }
         let receipt = ReceiptComposer.compose(
             dayEpoch: dayEpoch,
             totals: totals,
@@ -41,7 +47,9 @@ public struct Reconciler {
             machineName: machineName,
             marginComment: comment,
             calendar: calendar,
-            closedInArrears: closedInArrears
+            closedInArrears: closedInArrears,
+            auxDistinctHosts: distinctHosts,
+            auxTopApp: topApp
         )
         let reconciliation = Reconciliation(
             dayEpoch: dayEpoch,

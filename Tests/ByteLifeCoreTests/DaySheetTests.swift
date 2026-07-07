@@ -54,6 +54,36 @@ final class DaySheetTests: XCTestCase {
         XCTAssertEqual(account(sheet, .token).disclosure, DaySheet.partialTokenSources)
     }
 
+    func testTokenAccountSourceAwareDisclosureWhenPartial() {
+        let sources = [
+            AISourceStatus(displayName: "Claude Code", isReporting: true),
+            AISourceStatus(displayName: "Codex", isReporting: true),
+            AISourceStatus(displayName: "Gemini", isReporting: false),
+        ]
+        let sheet = DaySheet.build(
+            totals: totals(), availabilityByFamily: running, reconciliation: nil, aiSources: sources
+        )
+        XCTAssertEqual(
+            account(sheet, .token).disclosure,
+            "Partial: 2 of 3 sources reporting. Claude Code, Codex reporting. Gemini not yet opened."
+        )
+    }
+
+    func testTokenAccountSourceAwareDisclosureWhenAllReporting() {
+        let sources = [
+            AISourceStatus(displayName: "Claude Code", isReporting: true),
+            AISourceStatus(displayName: "Codex", isReporting: true),
+            AISourceStatus(displayName: "Gemini", isReporting: true),
+        ]
+        let sheet = DaySheet.build(
+            totals: totals(), availabilityByFamily: running, reconciliation: nil, aiSources: sources
+        )
+        XCTAssertEqual(
+            account(sheet, .token).disclosure,
+            "All 3 sources reporting: Claude Code, Codex, Gemini."
+        )
+    }
+
     func testMissingSourceReadsAsAccountNotYetOpened() {
         var availability = running
         availability[.ai] = .sourceMissing

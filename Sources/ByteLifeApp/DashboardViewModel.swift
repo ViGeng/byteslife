@@ -25,6 +25,9 @@ final class DashboardViewModel: ObservableObject {
     /// The last few inter-poll combined byte deltas (traffic + storage), newest first, for the header's
     /// hex ticker. Real snapshot deltas only — cleared on reopen so a close-gap aggregate never prints.
     @Published private(set) var tickerDeltas: [Int64] = []
+    /// The ALSO ON THE BOOKS strip: the day's accessory figures (energy, top app, files, hosts, unlocks)
+    /// as compact chips. Rebuilt on the same ticks as the day sheet from single-day indexed lookups.
+    @Published private(set) var auxiliaryStrip: AuxiliaryStrip = AuxiliaryStrip(chips: [])
     /// Today's stored receipt once the day is closed, so the panel can render the immutable strip on
     /// posting and again whenever the user reopens it. Nil while the day is still open.
     @Published private(set) var todaysReceipt: Reconciliation?
@@ -36,8 +39,6 @@ final class DashboardViewModel: ObservableObject {
 
     private static let openInterval: TimeInterval = 2
     private static let idleInterval: TimeInterval = 30
-    /// Completed minutes of history the segment-bar meters read. A cheap, indexed `minuteSeries` fetch.
-    private static let barWindow = 30
     /// How stale the last snapshot may be and still be reused warm on reopen. Within this window the slow
     /// background tick has kept the snapshot and EMA current, so the LIVE chip and rates are right on the
     /// first frame; beyond it (a fresh launch, a long sleep) the state is a phantom and resets.
@@ -56,9 +57,26 @@ final class DashboardViewModel: ObservableObject {
     private var previousSnapshot: MeterSnapshot?
     /// The carried smoothing and peak-hold state threaded between meter builds. Resets on relaunch.
     private var meterState: MeterState = .initial
+    /// The per-channel chart windows, mirrored from the view's `@AppStorage` menus. Primed from the same
+    /// persisted keys in `init` so the very first open fetches and buckets at the right depth, then kept
+    /// current by `setWindows` on every menu change. They drive both the fetch depth and each channel's
+    /// bucketing; a channel absent from the map falls back to 30M in the core build.
+    private var channelWindows: [MeterChannelKind: MeterWindow] = [:]
+    /// The hero flow chart's window, independent of the channel windows and likewise persisted.
+    private var heroWindow: MeterWindow = .default
+
+    /// Completed minutes of history to fetch each tick: the deepest window any selected chart reads, so
+    /// one indexed `minuteSeries` call serves every channel and the hero at once. At 24H this is 1440 rows
+    /// per kind, still a primary-key range scan over one or two contiguous days.
+    private var fetchMinutes: Int {
+        let channelMax = channelWindows.values.map(\.totalMinutes).max() ?? MeterWindow.default.totalMinutes
+        return max(channelMax, heroWindow.totalMinutes)
+    }
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
+        self.channelWindows = ChartWindowStore.channelWindows()
+        self.heroWindow = ChartWindowStore.window(ChartWindowStore.heroKey)
         let initial = DaySheet.build(totals: [:], availabilityByFamily: [:], reconciliation: nil)
         self.daySheet = initial
         self.menubarBalance = initial.postedByteVolume
@@ -114,6 +132,18 @@ final class DashboardViewModel: ObservableObject {
         } else {
             startTimer(interval: Self.idleInterval, publishMeter: false, animated: false)
         }
+    }
+
+    /// A chart-window menu changed. The view hands in the full current selection; the view model stores
+    /// it so the next fetch reaches the right depth and each channel buckets at its window. While the
+    /// panel is open it refreshes at once (animated) so the chart re-buckets immediately; closed, it only
+    /// records the choice for the next open. No new snapshot is taken, so rates and peaks are untouched —
+    /// only the history bars re-shape.
+    func setWindows(_ windows: [MeterChannelKind: MeterWindow], hero: MeterWindow) {
+        channelWindows = windows
+        heroWindow = hero
+        guard panelVisible else { return }
+        refresh(publishMeter: true, animated: true)
     }
 
     /// The panel closed: drop back to the slow cadence that keeps the menubar balance fresh and carries
@@ -178,8 +208,32 @@ final class DashboardViewModel: ObservableObject {
         let sheet = DaySheet.build(
             totals: totals,
             availabilityByFamily: availabilityByFamily,
-            reconciliation: reconciliation
+            reconciliation: reconciliation,
+            aiSources: coordinator.aiCollector.sourceStatuses()
         )
+
+        // The ALSO ON THE BOOKS strip: single-day indexed lookups for the top app and the distinct-host
+        // count, built only while the panel is visible (nobody reads the strip when it is closed). Each
+        // chip's presence follows its sensor's availability, so an off sensor reads a dim dash while a
+        // running-but-idle sensor reads a genuine 0. Unlocks come from the screen collector in the main
+        // registry; energy, focus, files, and hosts are the accessory sensors.
+        var strip: AuxiliaryStrip?
+        if panelVisible {
+            let topFocus = (try? coordinator.store.topFocus(dayEpoch: dayEpoch, limit: 1))?.first
+            let aux = coordinator.auxiliaryRegistry
+            let hostsRunning = aux.availability(forID: "hosts") == .running
+            let distinctHosts = hostsRunning
+                ? (try? coordinator.store.distinctHosts(dayEpoch: dayEpoch)) : nil
+            strip = AuxiliaryStrip.build(
+                totals: totals,
+                topFocus: topFocus,
+                distinctHosts: distinctHosts,
+                energyRunning: aux.availability(forID: "energy") == .running,
+                focusRunning: aux.availability(forID: "focus") == .running,
+                filesRunning: aux.availability(forID: "files") == .running,
+                unlocksRunning: coordinator.registry.availability(forID: "screen") == .running
+            )
+        }
 
         let current = MeterSnapshot(totals: totals, timestamp: now)
 
@@ -191,7 +245,7 @@ final class DashboardViewModel: ObservableObject {
         var series: [MetricKind: [Int64]] = [:]
         if publishMeter {
             series = (try? coordinator.store.minuteSeries(
-                kinds: MeterBridge.trackedKinds, count: Self.barWindow, endingBefore: now
+                kinds: MeterBridge.trackedKinds, count: fetchMinutes, endingBefore: now
             )) ?? [:]
             // The hex ticker prints real inter-poll byte deltas (traffic + storage), newest first. It
             // prints only over a short gap, the same honesty gate the peak uses: the first tick after a
@@ -205,12 +259,19 @@ final class DashboardViewModel: ObservableObject {
                 ticker = Array(([delta] + tickerDeltas).prefix(4))
             }
         }
+        // MECHANICS engraves the re-grant tag instead of the generic UNCALIBRATED when the input
+        // collector's stale-tap detector has flagged a grant gone stale under a changed signature.
+        let regrantFamilies: Set<MetricFamily> =
+            coordinator.inputCollector.tapSuspectStale ? [.input] : []
         let built = MeterBridge.build(
             current: current,
             previous: previousSnapshot,
             series: series,
             availabilityByFamily: availabilityByFamily,
-            priorState: meterState
+            priorState: meterState,
+            regrantFamilies: regrantFamilies,
+            windows: channelWindows,
+            heroWindow: heroWindow
         )
         previousSnapshot = current
         meterState = built.state
@@ -222,6 +283,7 @@ final class DashboardViewModel: ObservableObject {
             self.todaysReceipt = reconciliation
             if let bridge { self.meterBridge = bridge }
             if let ticker { self.tickerDeltas = ticker }
+            if let strip { self.auxiliaryStrip = strip }
         }
         if animated {
             // Figures roll to their new values via the views' numeric content transitions.
