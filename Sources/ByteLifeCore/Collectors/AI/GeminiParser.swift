@@ -11,15 +11,22 @@ public struct GeminiUsageEvent: Equatable, Sendable {
     /// The message's own timestamp (falling back to "now" at parse time), so backfill lands in the
     /// right day bucket.
     public let timestamp: Date
+    /// The answering model from the message's `model` field, or "unknown" when it carried none.
+    public let model: String
+    /// The session this message belongs to, from the file's top-level `sessionId` (empty when absent).
+    public let sessionId: String
     public let inputTokens: Int64
     /// Generated tokens plus reasoning ("thoughts") tokens, folded together so the output channel
     /// captures the full cognition the same way Codex's `output_tokens` already includes reasoning.
     public let outputTokens: Int64
     public let cacheReadTokens: Int64
 
-    public init(dedupKey: String, timestamp: Date, inputTokens: Int64, outputTokens: Int64, cacheReadTokens: Int64) {
+    public init(dedupKey: String, timestamp: Date, model: String = "unknown", sessionId: String = "",
+                inputTokens: Int64, outputTokens: Int64, cacheReadTokens: Int64) {
         self.dedupKey = dedupKey
         self.timestamp = timestamp
+        self.model = model
+        self.sessionId = sessionId
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.cacheReadTokens = cacheReadTokens
@@ -55,10 +62,13 @@ public enum GeminiParser {
         for message in messages {
             guard let tokens = message["tokens"] as? [String: Any] else { continue }
             let messageId = message["id"] as? String ?? ""
+            let model = message["model"] as? String ?? "unknown"
             let timestamp = (message["timestamp"] as? String).flatMap(parseTimestamp) ?? now
             events.append(GeminiUsageEvent(
                 dedupKey: "gemini:\(sessionId)|\(messageId)",
                 timestamp: timestamp,
+                model: model,
+                sessionId: sessionId,
                 inputTokens: token(tokens, "input"),
                 outputTokens: token(tokens, "output") + token(tokens, "thoughts"),
                 cacheReadTokens: token(tokens, "cached")

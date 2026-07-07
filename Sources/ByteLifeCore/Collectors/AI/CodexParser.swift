@@ -48,6 +48,19 @@ public enum CodexParser {
         )
     }
 
+    /// Returns the model named by a `turn_context` line, or nil for any other line. Codex records the
+    /// active model on each `turn_context` event (which precedes that turn's `token_count` events), so a
+    /// tailing source tracks the latest model seen and attributes subsequent snapshots to it. A
+    /// turn_context without a `model` field, and every non-turn_context line, return nil.
+    public static func turnContextModel(line: String) -> String? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let root = object as? [String: Any] else { return nil }
+        guard root["type"] as? String == "turn_context",
+              let payload = root["payload"] as? [String: Any] else { return nil }
+        return payload["model"] as? String
+    }
+
     private static func token(_ usage: [String: Any], _ key: String) -> Int64 {
         (usage[key] as? NSNumber)?.int64Value ?? 0
     }

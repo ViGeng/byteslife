@@ -285,7 +285,13 @@ public final class ClaudeCodeSource: AIUsageSource, @unchecked Sendable {
         var events: [AIIngestEvent] = []
         for line in result.lines {
             guard let event = ClaudeCodeParser.parse(line: line) else { continue }
-            events.append(AIIngestEvent(dedupKey: event.dedupKey, samples: event.samples()))
+            let attribution = AIUsageAttribution(
+                source: "claudeCode", model: event.model,
+                sessionId: event.sessionId, timestamp: event.timestamp
+            )
+            events.append(AIIngestEvent(
+                dedupKey: event.dedupKey, samples: event.samples(), attribution: attribution
+            ))
         }
 
         let meta: [(String, Int64)] = [

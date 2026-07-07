@@ -21,10 +21,11 @@ enum EnergyAccumulator {
 ///
 /// Each tick reads instantaneous milliwatts from an injectable reader and integrates it over the
 /// monotonic time since the last tick, using `CLOCK_UPTIME_RAW` so a system-sleep gap (when the clock
-/// freezes and the machine draws nothing worth booking) is never counted. When the reader returns nil
-/// there is no wattage signal (a desktop with no battery), so the collector reports `sourceMissing`
-/// honestly and books nothing. All mutable state is confined to `queue`, on which the scheduler tick
-/// runs; tests call `tick()` directly with an injected clock and reader.
+/// freezes and the machine draws nothing worth booking) is never counted. The production reader prefers
+/// the SMC whole-system power key (present on AC as well as on battery) and falls back to battery
+/// amperage×voltage; when neither has a signal the reader returns nil, so the collector reports
+/// `sourceMissing` honestly and books nothing. All mutable state is confined to `queue`, on which the
+/// scheduler tick runs; tests call `tick()` directly with an injected clock and reader.
 public final class EnergyCollector: Collector, @unchecked Sendable {
     public let id = "energy"
     public let family: MetricFamily = .auxiliary
@@ -46,11 +47,11 @@ public final class EnergyCollector: Collector, @unchecked Sendable {
     private var carriedMilliwattHours: Double = 0
 
     /// Injecting the reader and clock lets tests drive accrual deterministically; production reads live
-    /// IOKit power and the monotonic uptime clock.
+    /// SMC/IOKit power (SMC total power preferred, battery power as fallback) and the monotonic uptime clock.
     public init(
         store: SampleStore,
         tickInterval: DispatchTimeInterval = .seconds(30),
-        readMilliwatts: @escaping () -> Double? = PowerSource.milliwatts,
+        readMilliwatts: @escaping () -> Double? = { SystemPower.milliwatts() },
         clock: @escaping () -> UInt64 = ScreenCollector.uptimeNanos,
         now: @escaping () -> Date = Date.init
     ) {

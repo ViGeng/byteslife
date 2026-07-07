@@ -12,6 +12,10 @@ enum ChartWindowStore {
 
     static func key(_ kind: MeterChannelKind) -> String { "window.\(kind.rawValue)" }
     static let heroKey = "window.hero"
+    /// The one global WORK-window duration in minutes, shared by every chart's WORK option.
+    static let workMinutesKey = "window.work.minutes"
+    /// The WORK window's default span: eight hours, a working day.
+    static let defaultWorkMinutes = 480
 
     /// The persisted window for a key, defaulting to 30M when unset or unrecognized.
     static func window(_ key: String, in defaults: UserDefaults = .standard) -> MeterWindow {

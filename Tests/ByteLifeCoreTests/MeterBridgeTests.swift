@@ -495,6 +495,44 @@ final class MeterBridgeTests: XCTestCase {
         XCTAssertEqual(MeterWindow.default, .w30m)
     }
 
+    func testCustomWorkWindowBucketDerivation() {
+        // The WORK window derives a divisor-friendly bucket size keeping 30 to 48 bars. Spot-check the
+        // planned inputs: 1 hour, 8 hours, and an odd 37 hours.
+        let cases: [(minutes: Int, bucketMinutes: Int, bucketCount: Int)] = [
+            (60, 2, 30),     // 1h: 60/2 = 30 bars
+            (480, 10, 48),   // 8h: 480/10 = 48 bars
+            (2220, 60, 37),  // 37h: 2220/60 = 37 bars
+        ]
+        for c in cases {
+            let window = MeterWindow.custom(minutes: c.minutes)
+            XCTAssertEqual(window.totalMinutes, c.minutes, "span \(c.minutes)")
+            XCTAssertEqual(window.bucketMinutes, c.bucketMinutes, "bucketMinutes for \(c.minutes)")
+            XCTAssertEqual(window.bucketCount, c.bucketCount, "bucketCount for \(c.minutes)")
+            XCTAssertEqual(window.totalMinutes % window.bucketMinutes, 0, "even division for \(c.minutes)")
+            XCTAssertEqual(window.token, "WORK")
+            XCTAssertTrue(window.isCustom)
+        }
+
+        // Every whole-hour span in range keeps its bar count within [30, 48] and divides evenly.
+        for hours in 1...48 {
+            let window = MeterWindow.custom(minutes: hours * 60)
+            XCTAssertTrue((30...48).contains(window.bucketCount), "\(hours)h bars \(window.bucketCount)")
+            XCTAssertEqual(window.totalMinutes % window.bucketMinutes, 0, "\(hours)h even division")
+        }
+    }
+
+    func testCustomWorkWindowClampsAndRoundTrips() {
+        // The span clamps to the 1-to-48-hour band both below and above.
+        XCTAssertEqual(MeterWindow.custom(minutes: 10).totalMinutes, 60)
+        XCTAssertEqual(MeterWindow.custom(minutes: 99_999).totalMinutes, 2880)
+        // It persists and resolves through the RawRepresentable token, alongside the fixed windows.
+        XCTAssertEqual(MeterWindow.custom(minutes: 480).rawValue, "work:480")
+        XCTAssertEqual(MeterWindow(rawValue: "work:480"), .custom(minutes: 480))
+        XCTAssertEqual(MeterWindow(rawValue: "w30m"), .w30m)
+        XCTAssertNil(MeterWindow(rawValue: "nonsense"))
+        XCTAssertFalse(MeterWindow.h1.isCustom)
+    }
+
     func testWindowAggregatesMinutesAcrossBucketBoundaries() {
         // 1H: 60 minutes summed pairwise into 30 two-minute buckets. Two adjacent minutes land in one
         // bucket; the boundary falls between minute pairs, so minute 1 and minute 2 are in DIFFERENT

@@ -104,6 +104,10 @@ Status: executed 2026-07-07 (see CHANGELOG.md, iteration 3). Deviations recorded
 
 The live database on this machine already holds v1 data (29 days of AI backfill plus live counters). The v2 migration must be additive only and must be proven against a copy of a populated v1 store in tests.
 
+## Verification
+
+`swift build`, `swift build -c release`, and `swift test` green; the packaged app relaunches against the existing live store, migrates it to v2, renders the Ledger panel, and can close today's books producing a stored, hash-stamped receipt.
+
 ---
 
 # Iteration 4: the live dashboard panel
@@ -135,6 +139,10 @@ The panel is a chart-led live dashboard on a byte-native dark chassis. The gover
 - UNCALIBRATED channels keep the honest language ("UNCALIBRATED — NO LOCAL SRC" for a missing AI source; "UNCALIBRATED" with the calibrate affordance for permission-gated MECHANICS) in the channel color at 70%, over a flat chart.
 - Motion rules, exhaustive: numeric rolls on readouts, the per-channel live dot's breath gated on liveness, nothing else animates.
 - The footer keeps Reconcile, the POSTED stamp logic and colors, View receipt, launch-at-login, the General Ledger button, and Quit on the dark chassis. No spanning or long content may drive the panel wider than its frame; long tags wrap or truncate.
+
+## Verification
+
+`swift build` and `swift test` green with the new core (rate math, normalization, peak-hold, minute-window query across midnight) under test; the packaged app relaunches and renders the Meter Bridge with live rates while the Ledger surfaces behave unchanged.
 
 ---
 
@@ -241,10 +249,122 @@ The panel keeps its five flagship channels and gains a compact ALSO ON THE BOOKS
 
 `swift build` and `swift test` green with the new core (window buckets, stale-tap detector, Codex/Gemini parsers, focus and hosts stores, cadence) tested; the founder re-grants Input Monitoring once and MECHANICS moves again; window menus switch charts between 30M and 24H; the new chips read real values.
 
+---
+
+# Iteration 9: true energy, the sensor deck, fine-grained AI, and working windows
+
+Status: executed 2026-07-07 (see CHANGELOG.md, iteration 9), version 0.8.0 shipped to the tap. Post-execution notes: the SMC user client requires an exact 80-byte C struct layout that Swift's packing silently broke until padded (discovered by hardware verification, PSTR read 9.8 to 11.1 W on AC); the ambient-light gauge is captioned as a unitless level because the sensor reports raw uncalibrated counts, not lux; Bluetooth shipped counts-only with no names or hashes (amended in the decisions below); thermal-state changes, charging sessions, and the battery cycle count live as day-scoped meta counters rather than new kinds; ambient light, brightness, and the lid angle read sourceMissing on this machine, which is the designed degradation. Originally approved 2026-07-07 from founder feedback on 0.7.0 and the sensor questionnaire (everything selected). Threads: the Grant Permission button did nothing (macOS prompts once per identity; the orchestrator reset TCC state manually — the app must own this recovery); the macOS 26 Settings path in the permission hint is wrong; energy read zero on AC power (it measured battery discharge only); a user-tweakable custom window; per-model and per-session AI stats; a terminal commands counter; and the full sensor slate — lid open/close (founder-requested), thermals and fans, battery health and charging, ambient light, display brightness, wakes and boots, audio device switches, Bluetooth peripherals, volume changes. Face-to-screen working distance is noted as future work only (camera/TrueDepth ranging; needs its own privacy design).
+
+## Decisions
+
+- Permission recovery lives in the app. The grant affordance becomes a small flow: request; if no prompt appears (preflight still false immediately after a request that returned), offer "Reset permission state…" which runs `tccutil reset ListenEvent com.vigeng.bytelife` via Process (per-user, no privileges) and requests again — the prompt then genuinely fires. The settings hint drops the stale pane path: on macOS 26 the reliable instruction is the System Settings search field ("Input Monitoring"); the deep link stays as a best-effort with a plain open-System-Settings fallback.
+- True energy: an SMC reader (AppleSMC user client, the technique the open-source Stats app uses, no privileges) sampling system total power (key PSTR, watts as float), integrated over elapsed time into the existing energyMilliwattHours deltas. The battery Amperage x Voltage path stays as the fallback when SMC is unavailable. The same SMC client serves the thermal keys below. Injectable readers, tested integration math.
+- Working window: alongside 30M/1H/6H/24H, a user-defined WORK window — one duration (1 to 48 hours) configured once from any window menu ("Custom…", a small stepper popover), stored globally, then selectable per channel like the fixed options. Bucket size derives to keep 30 to 48 buckets.
+- Fine-grained AI: schema v4 adds ai_models(day_epoch, source, model, input, output, cache_creation, cache_read, PRIMARY KEY(day_epoch, source, model)) and ai_sessions(session_id PRIMARY KEY, source, first_seen, last_seen, day_epoch). Parsers already see model, session id, and timestamps: AIUsageEvent gains source/model/session fields and the atomic ingest extends to upsert model rows and session first/last timestamps in the SAME transaction. Surfaces: the Back Office COGNITION card gains a BY MODEL breakdown (top models with token bars) and session memos (sessions today, average and longest length); the panel stays light.
+- Terminal commands: a ShellHistoryCollector tailing ~/.zsh_history and ~/.bash_history via the existing FileTailer offsets, counting appended entries ONLY (never storing command text; zsh extended-history entries counted by their ": ts:dur;" headers, plain histories by line). Caveat accepted: shells configured to write at exit book in bursts. Kind commandsRun; surfaced as a Labor card memo and an ALSO ON THE BOOKS chip.
+- The sensor deck. Additive counter kinds: lidOpens, systemWakes, systemBoots, audioDeviceSwitches, btConnects, volumeChanges. Sampled curves get schema v4's third table gauges(day_epoch, minute, gauge TEXT, value INTEGER, PRIMARY KEY(day_epoch, minute, gauge)) storing per-minute readings: cpuTemperature (deci-degrees), fanRPM, batteryCharge (percent), ambientLux, displayBrightness (per mille), systemPowerWatts (deci-watts). Sensors: lid via IOPMrootDomain clamshell state notifications (angle best-effort via the HID lid-angle sensor where present, booked as a gauge lidAngle when readable); thermals/fans via the shared SMC client plus ProcessInfo.thermalState change counts; battery health/charging via AppleSmartBattery (charge curve, charging-session counts, cycle count as a day story memo); ambient light via IOKit HID (best-effort, sourceMissing when absent); display brightness via DisplayServices (best-effort); wakes/boots from existing notifications plus boot time; audio switches and volume via CoreAudio; Bluetooth connects via IOBluetooth. (Amended post-execution: the shipped Bluetooth collector counts connected-peripheral rises only and stores no name or hash at all, strictly more private than the salted-hash design first written here; a distinct-peripheral figure can adopt the hash journal later if wanted.) EVERY sensor degrades to sourceMissing honestly; none touches contents or identifiers.
+- Surfaces: the Back Office day story gains a SENSORS section — small curve charts (temperature, charge, lux, brightness, power) in a muted palette plus count memos (lid opens, wakes, audio switches, BT connects, volume changes) — and the receipt AUXILIARY section adds commands run, lid opens, and wakes (curves never print on receipts). The panel adds only the commands chip. All new collectors join the auxiliary registry (never the flagship stamp snapshot).
+- Version 0.8.0, shipped to the tap.
+
 ## Verification
 
-`swift build` and `swift test` green with the new core (rate math, normalization, peak-hold, minute-window query across midnight) under test; the packaged app relaunches and renders the Meter Bridge with live rates while the Ledger surfaces behave unchanged.
+`swift build` and `swift test` green (v4 migration proven against a populated v3 store; SMC/sensor readers injectable and their math tested; AI model/session ingest atomic and tested; history counting tested against fixture histories). The founder sees real watt-hours on AC power, the WORK window appears in every menu once set, the COGNITION card breaks down by model, and Grant Permission recovers by itself.
+
+---
+
+# The queue, reorganized (2026-07-07)
+
+Founder direction: improve efficiency and token-efficiency, and re-order the backlog more reasonably. Three rules now shape the queue. First, an iteration stays inside one subsystem cluster, so a build touches a coherent file set instead of re-reading the whole tree. Second, an iteration carries at most one schema migration. Third, verification effort scales with risk: money math and privacy-sensitive parsing earn adversarial review, while mechanical UI rides on the test suite plus one focused review pass. Orchestration follows the same discipline — small builder crews on disjoint file sets, resume instead of rerun on failures, and the strongest reviewers reserved for the riskiest pieces.
+
+The order, each step gated on the previous ship:
+
+1. Iteration 9 (shipped 2026-07-07, 0.8.0): sensors, true energy, permission self-recovery, fine-grained AI (schema v4), the WORK window, shell commands.
+2. Iteration 10 (0.9.0, honest numbers, no migration): the realtime token meter, the notional AI cost, and the Composite. All three only read what v4 already records, so this is the highest founder-visible value per line changed.
+3. Iteration 11 (0.10.0, the deeper record, schema v5): the Workshop (git) and the Journal in one migration, plus the working-hours strip as the first journal-powered insight.
+4. Iteration 12 (0.11.0, beyond the machine, schema v6): the Engagement Book (calendar) before the Correspondence account (email), ordered by permission friction.
+5. The standing backlog behind those: the weekly Statement, multi-device holdings and agentless SSH collection, the app rename, and face-distance sensing as noted future work.
+
+---
+
+# Iteration 10 (queued behind 9): honest numbers
+
+Status: approved 2026-07-07 from founder feedback; scope re-cut 2026-07-07 for efficiency (the Workshop and the Journal moved to iteration 11, email and calendar to iteration 12). Three asks, no schema change — everything here reads data that v4 already records. First, make the COGNITION live rate read truthfully while tokens are burning. Second, price AI token usage at official API prices and show the equivalent dollar cost. Third, replace naive summation as the overall figure, because tokens are not bytes and the non-byte accounts cannot honestly add into one number.
+
+## The notional cost at list prices
+
+Most of the founder's AI usage bills through subscriptions, so the honest framing is a valuation rather than a bill: what today's tokens WOULD cost at the official pay-as-you-go API prices. The app stays networkless. Prices ship as a bundled PriceCard in ByteLifeCore with an explicit as-of date (2026-07-07), refreshed at release time by the maintainer, and every cost surface carries the "at list prices, as of" framing. Verified list prices in USD per million tokens, written as input / output / cache read / cache write:
+
+- Anthropic (cache write is the 5-minute tier at 1.25x input; cache read is 0.1x input): claude-fable-5 is 10 / 50 / 1.00 / 12.50. claude-opus-4-8, -4-7, and -4-6 are 5 / 25 / 0.50 / 6.25. claude-sonnet-4-6 is 3 / 15 / 0.30 / 3.75. claude-haiku-4-5 is 1 / 5 / 0.10 / 1.25.
+- OpenAI (cached input is 10 percent of input; there is no separate write price): gpt-5.3-codex and gpt-5.2-codex are 1.75 / 14.00 / 0.175. gpt-5.4 is 2.50 / 15.00 / 0.25. gpt-5.4-mini is 0.75 / 4.50 / 0.075.
+- Google: gemini-3-pro-preview is 2.00 / 12.00 / 0.20 at the sub-200k-context tier; the long-context uplift is deliberately ignored in v1 and disclosed. gemini-3-flash-preview is 0.50 / 3.00 / 0.05.
+
+Matching is normalized longest-prefix on the stored model string, so dated or suffixed variants price correctly. A model with no match books as UNPRICED: it is excluded from the cost total and the exclusion is disclosed ("2.1K tokens unpriced") instead of being silently zeroed. Cost per (source, model, day) computes from the iteration-9 ai_models rows as input x in + output x out + cache_read x read + cache_creation x write. Surfaces: the Back Office COGNITION card gains a cost line, the BY MODEL breakdown gains a cost column, the receipt Token Account books a "Notional cost (list)" line, and period aggregates sum the daily figures. Tested: the per-model arithmetic, prefix matching, the unpriced fallback, and receipt determinism with a regenerated golden.
+
+## The Composite
+
+Tokens, bytes, seconds, and keystrokes cannot be added, but each can be compared against its own history. The BYTELIFE COMPOSITE is a market-style index over four component series: bytes moved (traffic plus storage), tokens (input plus output), attentive seconds, and input events (keys plus clicks plus scrolls). For each component the baseline is the median of that component over the trailing 28 recorded days. Today's ratio is today over baseline, clamped to [0.05, 20] so a single wild day cannot dominate. The Composite is the geometric mean of the ratios, times 100. It reads like an index: 100 is a typical day, 132 is a third busier than typical, and no unit can outweigh another because the mean is geometric over unit-free ratios. Fewer than 5 recorded baseline days renders an honest "collecting baseline" state instead of a fake number, and a component with a zero baseline drops out of the mean with disclosure. Surfaces: a COMPOSITE chip in the panel header (dim while collecting), the Back Office day header, a line in the receipt totals block ("Composite vs 28-day median: 132"), and a margin-note rule so an exceptional composite can become the day's dry comment. Tested: the median baseline, the geometric mean, clamping, zero-baseline components, and the insufficient-history state.
+
+## The realtime token meter
+
+Founder report: the COGNITION rate reads near zero while tokens are visibly burning. Diagnosis: ingestion is already event-driven (vnode watchers tail the transcripts on write), but AI tools book usage only at message completion, so tokens land in bursts. The 2-second-delta EMA that is correct for network and disk (which genuinely tick every poll) turns a burst into one absurd instantaneous spike followed by a fast decay to zero, so most glances land in a gap and read idle. Fix: COGNITION's live rate becomes a trailing-window rate — the view model keeps a short trail of (timestamp, in+out token total) snapshots in the carried meter state, and the rate is tokens landed over the trailing 90 seconds, expressed in the existing tok/min unit and refreshed every poll. This reads steady while an agentic session is landing messages every few seconds to a minute, decays honestly to zero about 90 seconds after the last landing, changes no collector or store code, and costs nothing (the totals are already fetched every 2 seconds). The session peak becomes the maximum trailing-window rate, which is a sustained figure and needs no separate laundering guard for this channel. Liveness keeps the 1 tok/min threshold against the windowed rate. The hard floor remains source visibility: a single very long turn that writes nothing until it finishes cannot show mid-turn (the transcripts contain nothing to read), which is accepted and undisclosed on the dial. Cache tokens stay excluded from the readout, per the ledger's exchange-rate reasoning. Tested: burst-then-gap reads a steady rate across the gap, decay after the last landing, window trimming, and the peak as a sustained maximum.
 
 ## Verification
 
-`swift build`, `swift build -c release`, and `swift test` green; the packaged app relaunches against the existing live store, migrates it to v2, renders the Ledger panel, and can close today's books producing a stored, hash-stamped receipt.
+`swift build` and `swift test` green; the founder sees the COGNITION dial read steady while an agentic session burns, a plausible dollar figure for today's real usage across all three sources, and a Composite near 100 on an ordinary day. Version 0.9.0.
+
+---
+
+# Iteration 11 (queued behind 10): the deeper record
+
+Status: approved 2026-07-07 from founder feedback (git stats, and event-grain records with metadata so insights like working peaks stay derivable). One migration, schema v5, carries both halves. Version 0.10.0.
+
+## The Workshop: git stats
+
+Commits are the most ledger-shaped data on the machine: discrete, timestamped, attributed, and content-hashed. A GitCollector books the day's coding activity from the local repositories, counts only, never contents.
+
+- Discovery: a configurable list of workspace roots (Back Office setting), defaulting to whichever of ~/source, ~/dev, ~/code, ~/Projects, and ~/repos exist. Each root is shallow-scanned (depth 3) for .git directories on start and on a slow rescan timer, with a vnode watcher on each root catching new clones between passes.
+- Live tailing follows the AISourceWatch discipline exactly: a repository with HEAD activity in the last 7 days earns one vnode watcher on .git/logs/HEAD (which appends a line on every commit, checkout, merge, and reset, so commits land in the books within milliseconds); dormant repositories get a cheap stat on each rescan pass and no descriptor. This keeps a machine with hundreds of clones under its fd budget.
+- Attribution and counting: only commits authored by the user's own git identities count (user.email from the global config plus each repo's local override). Stats come from an incremental `git log --author --since` with --numstat per repository, run through Process against the system git; a machine without git books the family as sourceMissing honestly. Kinds: gitCommits, gitLinesAdded, gitLinesDeleted, gitFilesChanged, gitCheckouts (branch switches from the HEAD reflog). Distinct repositories touched per day derive from the commit journal (see the Journal below) rather than a separate distinct-set table.
+- Dedup and honesty: every commit lands as one row in the `git_commits` journal table keyed on its SHA inside the store's atomic ingest, so the same commit seen twice (a re-scan, a repo cloned twice) books once. An amend or rebase mints new SHAs and therefore counts again: ByteLife counts acts of committing, which is the honest reading for an activity ledger, and the plan records that choice. Because commit SHAs are globally stable, the Workshop is the first naturally multi-device-mergeable family: two Macs seeing the same commit will dedup by SHA under the holdings design's event-log union.
+- Privacy: repository identity is stored as a salted hash for dedup and distinct counts plus a display basename for the Back Office (the same balance app focus struck with app names). Receipts and every shareable artifact print counts only, never repository names.
+- Surfaces: an ALSO ON THE BOOKS chip ("14 commits · +812 −340"), a WORKSHOP card in the Back Office day story (commits, line flows booked debit-and-credit as written against deleted, files changed, checkouts, top repositories by commits), a counts-only line in the receipt AUXILIARY section, and a margin-note rule (a day with more lines deleted than written earns the bookkeeper's approval). The family joins the auxiliary registry, never the flagship stamp snapshot.
+- Tested: log parsing against fixture output, SHA dedup across rescans, identity filtering, reflog checkout counting, discovery bounded by depth, and the fd discipline (watchers only on recently active repos).
+
+## The Journal: event-grain records beneath the ledger
+
+Founder direction: keep detailed per-event records with metadata (a commit SHA indexed with its stats, and the other metrics treated the same), so future insights such as working peaks stay derivable without re-collection. In bookkeeping terms ByteLife gains a proper journal, the book of original entry; day cards, receipts, and aggregates are derived views over it, never the only record.
+
+- The continuous families are already journaled. `samples` persists minute-grain counters forever (day_epoch, minute, kind) and iteration 9's `gauges` persists minute-grain sensor levels, so hour-of-day patterns for bytes, keys, attention, and sensors are derivable from what is on disk today. No change needed there.
+- The discrete families gain event rows in schema v5. `git_commits(sha TEXT PRIMARY KEY, repo_hash, committed_at, day_epoch, lines_added, lines_deleted, files_changed)` with a day index is both the Workshop's dedup ledger and its journal: one insert per commit, and per-hour, per-repo, and distinct-repo breakdowns are each one query away.
+- The AI dedup ledger becomes the AI journal. `ai_seen` gains nullable columns (timestamp, source, model, session_id, input, output, cache_creation, cache_read) populated for every event ingested from v5 onward, written in the same atomic transaction ingest already uses. Rows recorded before v5 keep NULL metadata, so the journal honestly begins at its birthday instead of pretending to reach back; dedup semantics are untouched.
+- Retention is forever, matching the ledger's premise. Journal rows are tens of bytes, so a heavy year adds a few megabytes.
+- One first insight ships with the schema so the journal earns its keep immediately: the Back Office day story gains a WORKING HOURS strip of three thin 24-hour lanes (keystrokes from minute samples, tokens from minute samples, commits from the journal as dots), each lane naming its own peak hour. There is no cross-family summation; each lane speaks its own unit, per the Composite's reasoning.
+- Tested: the v5 migration against a populated v4 store, journal writes inside the atomic ingest, derived distinct-repo counts, and the hour-histogram query across a midnight boundary.
+
+## Verification
+
+`swift build` and `swift test` green (the v5 migration proven against a populated v4 store; the finer assertions live in each section's tested list); the founder sees today's commits on the books minutes after making them, and a working-hours strip naming each lane's peak hour. Version 0.10.0.
+
+---
+
+# Iteration 12 (designed, queued behind 11): the Engagement Book and the Correspondence account
+
+Status: proposed 2026-07-07 from founder ideas (email counts including opt-in words read and written, and calendar events), feasibility-checked, awaiting the iteration-11 ship before build. Calendar leads because its permission is light; email follows behind its Full Disk Access gate. Schema v6 carries both journals. Version 0.11.0.
+
+## The Engagement Book: calendar (the easy half)
+
+EventKit is a clean public API, so this half is low-risk. An EngagementsCollector requests full calendar access (the macOS 14+ `requestFullAccessToEvents` flow, with the usage string in Info.plist) and books per day: events scheduled, hours committed (summed event durations, all-day events excluded from hours and counted separately), meetings (events with more than one attendee), and calendars in use. Refresh on `EKEventStoreChanged` notifications plus a slow poll. Journal grain per iteration 11's principle: one row per event occurrence keyed on a salted hash of the event identifier, storing start, duration in minutes, and attendee count, never a title, location, or attendee name. Denied access books needsPermission honestly; no calendar configured books sourceMissing. The ledger reading is committed time against attended time: the day story can lay hours committed alongside EXPOSURE's attentive hours, two units that stay side by side and are never summed.
+
+## The Correspondence account: email (the harder half)
+
+Feasible for Apple Mail only, and it sits behind Full Disk Access, macOS's heaviest permission, because `~/Library/Mail` is TCC-protected. The design accepts that honestly: the family ships strictly opt-in, reads needsPermission with a plain explanation until the user grants Full Disk Access in System Settings, and the app remains fully functional without it. Third-party clients (Outlook, Gmail in a browser) are invisible to this collector and the disclosure says so.
+
+- Counts (the default tier once enabled): messages received, sent, and drafted per day, plus distinct correspondents as salted hashes through the hosts_seen pattern. Source: Apple Mail's Envelope Index SQLite database under `~/Library/Mail/V*/MailData/`, opened strictly read-only with busy-retry (Mail owns the file), consumed incrementally by ROWID high-water mark, with an FSEvents watcher plus a slow poll driving scans. The Envelope Index is metadata only, which fits the privacy rule structurally: the counts tier never opens a message body.
+- Words written and words read (a second, separately toggled tier, off by default, per the founder's "only turned on"): word counts computed in memory from message bodies (.emlx files, MIME/HTML stripped to text) and discarded, storing only integers. Words written counts bodies of newly sent and drafted messages. Words read counts bodies of messages whose read flag flipped since the last scan, disclosed in the UI as an approximation ("words in mail you opened"), because macOS records opening, not reading.
+- Privacy line, stated everywhere the family surfaces: no subject, sender, address, or body text is ever stored; correspondent hashes are salted and non-reversible like host hashes; receipts and shareable artifacts print counts only.
+- Journal grain: one row per message event keyed on a salted hash of the message identifier, storing direction, timestamp, and nullable word count.
+- Surfaces: an ALSO ON THE BOOKS chip ("31 rcvd · 12 sent"), a CORRESPONDENCE card in the day story (received against sent as the debit-credit pair, drafts and correspondents as memos, word flows when the tier is on), a counts-only receipt AUXILIARY line, and honest per-tier availability states.
+
+## Verification
+
+`swift build` and `swift test` green (Envelope Index reader against a fixture database, word counting against fixture .emlx files, EventKit collector behind an injectable store protocol); the founder grants calendar access and sees today's engagements booked, then opts into mail and sees the day's correspondence counts without the app ever persisting a word of content.

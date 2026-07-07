@@ -48,6 +48,18 @@ final class CodexParserTests: XCTestCase {
         XCTAssertNil(CodexParser.parse(line: ""))
     }
 
+    func testTurnContextModelExtractsModel() {
+        let line = #"{"type":"turn_context","timestamp":"2026-07-06T12:00:00.000Z","payload":{"turn_id":"t1","cwd":"/w","model":"gpt-5.4-codex","effort":"high"}}"#
+        XCTAssertEqual(CodexParser.turnContextModel(line: line), "gpt-5.4-codex")
+    }
+
+    func testTurnContextModelNilForNonTurnContextOrModelless() {
+        // A token_count line, a turn_context without a model, and malformed JSON all yield nil.
+        XCTAssertNil(CodexParser.turnContextModel(line: tokenCountLine()))
+        XCTAssertNil(CodexParser.turnContextModel(line: #"{"type":"turn_context","payload":{"cwd":"/w"}}"#))
+        XCTAssertNil(CodexParser.turnContextModel(line: "{ not json"))
+    }
+
     func testParsesTimestamp() {
         let snapshot = CodexParser.parse(line: tokenCountLine())
         let formatter = ISO8601DateFormatter()

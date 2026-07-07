@@ -5,16 +5,87 @@ import SQLite3
 /// temporary the C call outlives. SQLITE_STATIC would let SQLite read freed memory here.
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-/// One AI usage record to ingest atomically: a dedup key and the additive samples it contributes.
-/// The store records the samples only when the key is newly seen, so the whole `ingest` batch stays
-/// exactly-once even if it is retried after a failure.
+/// Fine-grained attribution for one ingested AI usage event: which source produced it, which model
+/// answered, the session it belongs to, and the event's own timestamp. Carried alongside the additive
+/// samples so the SAME atomic ingest that books tokens also upserts the per-model day totals and the
+/// session's first/last timestamps. A missing model is normalized to "unknown" so the model ledger is
+/// never keyed on an empty string.
+///
+/// Backfill honesty: attribution is booked only for a NEWLY-seen event, exactly like its samples. The
+/// `ai_models` and `ai_sessions` ledgers therefore fill going forward, for events ingested from now on.
+/// Already-ingested history is not retroactively attributed, because the sources' dedup keys and byte
+/// offsets keep old transcript content from being re-read. This stage forces no re-scan.
+public struct AIUsageAttribution: Equatable, Sendable {
+    /// Short, stable source key (for example "claudeCode", "codex", "gemini").
+    public let source: String
+    /// The answering model, or "unknown" when the transcript line carried none.
+    public let model: String
+    /// The session identity this event belongs to; empty means the source could not name a session,
+    /// in which case only the per-model total is booked and no session row is written.
+    public let sessionId: String
+    /// The event's own timestamp: the day attribution for the model total and the session's
+    /// first/last-seen bounds both derive from it.
+    public let timestamp: Date
+
+    public init(source: String, model: String, sessionId: String, timestamp: Date) {
+        self.source = source
+        self.model = model.isEmpty ? "unknown" : model
+        self.sessionId = sessionId
+        self.timestamp = timestamp
+    }
+}
+
+/// One AI usage record to ingest atomically: a dedup key, the additive samples it contributes, and an
+/// optional fine-grained attribution. The store records the samples (and, when present, the model and
+/// session rows) only when the key is newly seen, so the whole `ingest` batch stays exactly-once even
+/// if it is retried after a failure. A nil `attribution` books only the samples, exactly as before.
 public struct AIIngestEvent: Equatable, Sendable {
     public let dedupKey: String
     public let samples: [Sample]
+    public let attribution: AIUsageAttribution?
 
-    public init(dedupKey: String, samples: [Sample]) {
+    public init(dedupKey: String, samples: [Sample], attribution: AIUsageAttribution? = nil) {
         self.dedupKey = dedupKey
         self.samples = samples
+        self.attribution = attribution
+    }
+}
+
+/// A day's (or period's) token total for one source+model pair, read back from the `ai_models` ledger.
+public struct AIModelTotal: Equatable, Sendable {
+    public let source: String
+    public let model: String
+    public let input: Int64
+    public let output: Int64
+    public let cacheCreation: Int64
+    public let cacheRead: Int64
+
+    public init(source: String, model: String, input: Int64, output: Int64,
+                cacheCreation: Int64, cacheRead: Int64) {
+        self.source = source
+        self.model = model
+        self.input = input
+        self.output = output
+        self.cacheCreation = cacheCreation
+        self.cacheRead = cacheRead
+    }
+
+    /// All four channels summed, the natural weight for ranking the top models.
+    public var total: Int64 { input + output + cacheCreation + cacheRead }
+}
+
+/// Session statistics for a single day: how many sessions opened that day and how long they ran.
+/// A session's length is `last_seen - first_seen` in seconds; the averages are zero when no session
+/// opened on the day.
+public struct AISessionStats: Equatable, Sendable {
+    public let count: Int
+    public let averageLength: Int64
+    public let longestLength: Int64
+
+    public init(count: Int, averageLength: Int64, longestLength: Int64) {
+        self.count = count
+        self.averageLength = averageLength
+        self.longestLength = longestLength
     }
 }
 
@@ -155,9 +226,11 @@ public final class SampleStore: @unchecked Sendable {
     /// Atomically ingests a batch of AI usage. In one `BEGIN IMMEDIATE ... COMMIT`: for each event,
     /// `INSERT OR IGNORE` its dedup key (recording today as its first-seen day, so pruning is by
     /// time-since-seen), and only when the key is newly inserted accumulate its samples into the
-    /// matching minute cells; then upsert the meta int64s (the caller's byte offset and inode). Any
-    /// error rolls the whole batch back, so a persisted offset never advances past unrecorded tokens.
-    /// Returns the samples that were newly recorded (from keys inserted here), for the caller to emit.
+    /// matching minute cells AND, when the event carries an attribution, upsert its per-model day total
+    /// and its session's first/last timestamps; then upsert the meta int64s (the caller's byte offset
+    /// and inode). Every write shares the one transaction, so any error rolls the whole batch back and a
+    /// persisted offset never advances past unrecorded tokens, model rows, or session bounds. Returns the
+    /// samples that were newly recorded (from keys inserted here), for the caller to emit.
     @discardableResult
     public func ingest(events: [AIIngestEvent], meta: [(String, Int64)]) throws -> [Sample] {
         guard !events.isEmpty || !meta.isEmpty else { return [] }
@@ -176,6 +249,30 @@ public final class SampleStore: @unchecked Sendable {
                     DO UPDATE SET value = value + excluded.value;
                     """)
                 defer { sqlite3_finalize(sampleStmt) }
+                // Per-model day total: accumulate every channel additively on conflict.
+                let modelStmt = try prepare("""
+                    INSERT INTO ai_models
+                        (day_epoch, source, model, input, output, cache_creation, cache_read)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (day_epoch, source, model) DO UPDATE SET
+                        input          = input          + excluded.input,
+                        output         = output         + excluded.output,
+                        cache_creation = cache_creation + excluded.cache_creation,
+                        cache_read     = cache_read     + excluded.cache_read;
+                    """)
+                defer { sqlite3_finalize(modelStmt) }
+                // Session bounds: keep the earliest first_seen and the latest last_seen, and attribute
+                // the session to the day of its (possibly newly earlier) first sighting.
+                let sessionStmt = try prepare("""
+                    INSERT INTO ai_sessions (session_id, source, first_seen, last_seen, day_epoch)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        first_seen = MIN(first_seen, excluded.first_seen),
+                        last_seen  = MAX(last_seen, excluded.last_seen),
+                        day_epoch  = CASE WHEN excluded.first_seen < first_seen
+                                          THEN excluded.day_epoch ELSE day_epoch END;
+                    """)
+                defer { sqlite3_finalize(sessionStmt) }
                 let metaStmt = try prepare("""
                     INSERT INTO meta (key, ival) VALUES (?, ?)
                     ON CONFLICT (key) DO UPDATE SET ival = excluded.ival;
@@ -205,6 +302,11 @@ public final class SampleStore: @unchecked Sendable {
                         sqlite3_clear_bindings(sampleStmt)
                     }
                     recorded.append(contentsOf: event.samples)
+
+                    if let attribution = event.attribution {
+                        try upsertAttributionLocked(attribution, samples: event.samples,
+                                                    modelStmt: modelStmt, sessionStmt: sessionStmt)
+                    }
                 }
 
                 for (key, value) in meta {
@@ -223,6 +325,56 @@ public final class SampleStore: @unchecked Sendable {
                 throw error
             }
         }
+    }
+
+    /// Upserts one newly-seen event's fine-grained attribution using the already-prepared statements,
+    /// inside the caller's open transaction. The per-model day total sums each token channel from the
+    /// event's own samples (so the model ledger and the samples table can never disagree); the session
+    /// row records the event timestamp as both a first- and last-seen candidate. A source-less
+    /// attribution books nothing; a session-less one books only the model total. Must run on `queue`.
+    private func upsertAttributionLocked(
+        _ attribution: AIUsageAttribution,
+        samples: [Sample],
+        modelStmt: OpaquePointer,
+        sessionStmt: OpaquePointer
+    ) throws {
+        guard !attribution.source.isEmpty else { return }
+        let dayEpoch = DayBucket.dayEpoch(for: attribution.timestamp)
+        let unixSeconds = Int64(attribution.timestamp.timeIntervalSince1970.rounded(.down))
+
+        var input: Int64 = 0, output: Int64 = 0, cacheCreation: Int64 = 0, cacheRead: Int64 = 0
+        for sample in samples {
+            switch sample.kind {
+            case .aiInputTokens: input += sample.value
+            case .aiOutputTokens: output += sample.value
+            case .aiCacheCreationTokens: cacheCreation += sample.value
+            case .aiCacheReadTokens: cacheRead += sample.value
+            default: break
+            }
+        }
+
+        sqlite3_bind_int64(modelStmt, 1, dayEpoch)
+        bindText(modelStmt, 2, attribution.source)
+        bindText(modelStmt, 3, attribution.model)
+        sqlite3_bind_int64(modelStmt, 4, input)
+        sqlite3_bind_int64(modelStmt, 5, output)
+        sqlite3_bind_int64(modelStmt, 6, cacheCreation)
+        sqlite3_bind_int64(modelStmt, 7, cacheRead)
+        let modelRc = sqlite3_step(modelStmt)
+        guard modelRc == SQLITE_DONE else { throw SQLiteError.from(db: db, code: modelRc) }
+        sqlite3_reset(modelStmt)
+        sqlite3_clear_bindings(modelStmt)
+
+        guard !attribution.sessionId.isEmpty else { return }
+        bindText(sessionStmt, 1, attribution.sessionId)
+        bindText(sessionStmt, 2, attribution.source)
+        sqlite3_bind_int64(sessionStmt, 3, unixSeconds)
+        sqlite3_bind_int64(sessionStmt, 4, unixSeconds)
+        sqlite3_bind_int64(sessionStmt, 5, dayEpoch)
+        let sessionRc = sqlite3_step(sessionStmt)
+        guard sessionRc == SQLITE_DONE else { throw SQLiteError.from(db: db, code: sessionRc) }
+        sqlite3_reset(sessionStmt)
+        sqlite3_clear_bindings(sessionStmt)
     }
 
     // MARK: - Reads
@@ -693,6 +845,144 @@ public final class SampleStore: @unchecked Sendable {
                 }
             }
             return result
+        }
+    }
+
+    // MARK: - AI model & session ledgers
+
+    /// The per-source, per-model token totals booked on `dayEpoch`, one row per source+model pair.
+    /// One indexed range query over the day's contiguous rows on the (day_epoch, source, model) primary
+    /// key. Rows are returned heaviest first (by total tokens) so the caller can take the top models
+    /// directly. A day with no AI usage returns an empty array.
+    public func aiModelTotals(dayEpoch: Int64) throws -> [AIModelTotal] {
+        try queue.sync {
+            let stmt = try prepare("""
+                SELECT source, model, input, output, cache_creation, cache_read
+                FROM ai_models WHERE day_epoch = ?;
+                """)
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            return try collectModelTotals(stmt)
+        }
+    }
+
+    /// The per-source, per-model token totals summed across every day in `days`, grouped so each
+    /// source+model pair appears once. One indexed query using the (day_epoch, ...) primary key for the
+    /// `IN` range. Rows are returned heaviest first. Feeds the Back Office aggregate COGNITION card.
+    public func aiModelTotals(dayEpochs days: [Int64]) throws -> [AIModelTotal] {
+        guard !days.isEmpty else { return [] }
+        return try queue.sync {
+            let placeholders = Array(repeating: "?", count: days.count).joined(separator: ",")
+            let stmt = try prepare("""
+                SELECT source, model,
+                       SUM(input), SUM(output), SUM(cache_creation), SUM(cache_read)
+                FROM ai_models WHERE day_epoch IN (\(placeholders))
+                GROUP BY source, model;
+                """)
+            defer { sqlite3_finalize(stmt) }
+            for (i, day) in days.enumerated() { sqlite3_bind_int64(stmt, Int32(i + 1), day) }
+            return try collectModelTotals(stmt)
+        }
+    }
+
+    /// Drains a six-column (source, model, input, output, cache_creation, cache_read) result set into
+    /// `AIModelTotal`s, sorted heaviest total first with source+model as a stable tiebreak. On `queue`.
+    private func collectModelTotals(_ stmt: OpaquePointer) throws -> [AIModelTotal] {
+        var rows: [AIModelTotal] = []
+        while true {
+            let rc = sqlite3_step(stmt)
+            if rc == SQLITE_ROW {
+                rows.append(AIModelTotal(
+                    source: columnText(stmt, 0),
+                    model: columnText(stmt, 1),
+                    input: sqlite3_column_int64(stmt, 2),
+                    output: sqlite3_column_int64(stmt, 3),
+                    cacheCreation: sqlite3_column_int64(stmt, 4),
+                    cacheRead: sqlite3_column_int64(stmt, 5)
+                ))
+            } else if rc == SQLITE_DONE {
+                break
+            } else {
+                throw SQLiteError.from(db: db, code: rc)
+            }
+        }
+        return rows.sorted {
+            if $0.total != $1.total { return $0.total > $1.total }
+            if $0.source != $1.source { return $0.source < $1.source }
+            return $0.model < $1.model
+        }
+    }
+
+    /// Session statistics for the sessions whose FIRST sighting fell on `dayEpoch`: how many opened,
+    /// their average length, and the longest, each length being `last_seen - first_seen` in seconds.
+    /// One indexed lookup via the `ai_sessions_by_day` index. A day with no new session reports zeros.
+    public func aiSessionStats(dayEpoch: Int64) throws -> AISessionStats {
+        try queue.sync {
+            let stmt = try prepare("""
+                SELECT COUNT(*),
+                       CAST(AVG(last_seen - first_seen) AS INTEGER),
+                       MAX(last_seen - first_seen)
+                FROM ai_sessions WHERE day_epoch = ?;
+                """)
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            let rc = sqlite3_step(stmt)
+            guard rc == SQLITE_ROW else { throw SQLiteError.from(db: db, code: rc) }
+            let count = Int(sqlite3_column_int64(stmt, 0))
+            // AVG and MAX are SQL NULL when no row matched; read them as zero.
+            let average = sqlite3_column_type(stmt, 1) == SQLITE_NULL ? 0 : sqlite3_column_int64(stmt, 1)
+            let longest = sqlite3_column_type(stmt, 2) == SQLITE_NULL ? 0 : sqlite3_column_int64(stmt, 2)
+            return AISessionStats(count: count, averageLength: average, longestLength: longest)
+        }
+    }
+
+    // MARK: - Gauges (per-minute sensor readings)
+
+    /// Records one gauge READING for a minute cell, REPLACING any prior reading in that cell because a
+    /// gauge is a level, not an accumulator. Minutes outside the day (0..<1440) are rejected as a no-op.
+    public func recordGauge(dayEpoch: Int64, minute: Int32, gauge: String, value: Int64) throws {
+        guard minute >= 0, minute < 1440 else { return }
+        try queue.sync {
+            let stmt = try prepare("""
+                INSERT INTO gauges (day_epoch, minute, gauge, value) VALUES (?, ?, ?, ?)
+                ON CONFLICT (day_epoch, minute, gauge) DO UPDATE SET value = excluded.value;
+                """)
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            sqlite3_bind_int(stmt, 2, minute)
+            bindText(stmt, 3, gauge)
+            sqlite3_bind_int64(stmt, 4, value)
+            let rc = sqlite3_step(stmt)
+            guard rc == SQLITE_DONE else { throw SQLiteError.from(db: db, code: rc) }
+        }
+    }
+
+    /// The day's readings for one `gauge` as a 1440-slot minute series, `nil` where no reading was taken
+    /// (a gap is honestly absent, never zero, since zero is a real reading). One indexed range query over
+    /// the day's contiguous rows on the (day_epoch, minute, gauge) primary key, filtering the gauge in the
+    /// scan. Feeds the Back Office SENSORS curves.
+    public func gaugeSeries(gauge: String, dayEpoch: Int64) throws -> [Int64?] {
+        try queue.sync {
+            let stmt = try prepare("""
+                SELECT minute, value FROM gauges WHERE day_epoch = ? AND gauge = ?;
+                """)
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            bindText(stmt, 2, gauge)
+            var series = [Int64?](repeating: nil, count: 1440)
+            while true {
+                let rc = sqlite3_step(stmt)
+                if rc == SQLITE_ROW {
+                    let minute = Int(sqlite3_column_int(stmt, 0))
+                    guard minute >= 0, minute < 1440 else { continue }
+                    series[minute] = sqlite3_column_int64(stmt, 1)
+                } else if rc == SQLITE_DONE {
+                    break
+                } else {
+                    throw SQLiteError.from(db: db, code: rc)
+                }
+            }
+            return series
         }
     }
 

@@ -37,6 +37,11 @@ public final class CodexSource: AIUsageSource, @unchecked Sendable {
         var cumOutput: Int64
         var cumCached: Int64
         var ordinal: Int64
+        /// The latest model named by a `turn_context` line, attributed to the token_count snapshots that
+        /// follow it. It is derived from the stream, not persisted: a from-zero re-read reconstructs it
+        /// exactly (turn_context precedes its token_count events), and a mid-file restart resuming past a
+        /// turn_context honestly books "unknown" until the next one arrives.
+        var model: String
     }
     private var cursors: [String: Cursor] = [:]
 
@@ -291,11 +296,17 @@ public final class CodexSource: AIUsageSource, @unchecked Sendable {
             cursor.cumOutput = 0
             cursor.cumCached = 0
             cursor.ordinal = 0
+            cursor.model = "unknown"
         }
 
         let sessionId = URL(fileURLWithPath: path).lastPathComponent
         var events: [AIIngestEvent] = []
         for line in result.lines {
+            // A turn_context line names the model for the snapshots that follow it; track it and move on.
+            if let model = CodexParser.turnContextModel(line: line) {
+                cursor.model = model
+                continue
+            }
             guard let snapshot = CodexParser.parse(line: line) else { continue }
             let deltaInput = max(0, snapshot.totalInput - cursor.cumInput)
             let deltaOutput = max(0, snapshot.totalOutput - cursor.cumOutput)
@@ -308,7 +319,11 @@ public final class CodexSource: AIUsageSource, @unchecked Sendable {
             cursor.ordinal += 1
             events.append(AIIngestEvent(
                 dedupKey: key,
-                samples: samples(input: deltaInput, output: deltaOutput, cached: deltaCached, at: snapshot.timestamp)
+                samples: samples(input: deltaInput, output: deltaOutput, cached: deltaCached, at: snapshot.timestamp),
+                attribution: AIUsageAttribution(
+                    source: "codex", model: cursor.model,
+                    sessionId: sessionId, timestamp: snapshot.timestamp
+                )
             ))
         }
 
@@ -348,7 +363,8 @@ public final class CodexSource: AIUsageSource, @unchecked Sendable {
             cumInput: metaInt(Self.cumInputKey(forPath: path)) ?? 0,
             cumOutput: metaInt(Self.cumOutputKey(forPath: path)) ?? 0,
             cumCached: metaInt(Self.cumCachedKey(forPath: path)) ?? 0,
-            ordinal: metaInt(Self.ordinalKey(forPath: path)) ?? 0
+            ordinal: metaInt(Self.ordinalKey(forPath: path)) ?? 0,
+            model: "unknown"
         )
     }
 

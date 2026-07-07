@@ -9,6 +9,10 @@ public struct AIUsageEvent: Equatable, Sendable {
     /// The record's own timestamp (falling back to "now" at parse time), so historical backfill lands
     /// in the correct day bucket.
     public let timestamp: Date
+    /// The answering model from `message.model`, or "unknown" when the line carried none.
+    public let model: String
+    /// The session this line belongs to, from the top-level `sessionId` (empty when absent).
+    public let sessionId: String
     public let inputTokens: Int64
     public let outputTokens: Int64
     public let cacheCreationTokens: Int64
@@ -17,6 +21,8 @@ public struct AIUsageEvent: Equatable, Sendable {
     public init(
         dedupKey: String,
         timestamp: Date,
+        model: String = "unknown",
+        sessionId: String = "",
         inputTokens: Int64,
         outputTokens: Int64,
         cacheCreationTokens: Int64,
@@ -24,6 +30,8 @@ public struct AIUsageEvent: Equatable, Sendable {
     ) {
         self.dedupKey = dedupKey
         self.timestamp = timestamp
+        self.model = model
+        self.sessionId = sessionId
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.cacheCreationTokens = cacheCreationTokens
@@ -60,6 +68,7 @@ public enum ClaudeCodeParser {
         let sessionId = root["sessionId"] as? String ?? ""
         let requestId = root["requestId"] as? String ?? ""
         let messageId = message["id"] as? String ?? ""
+        let model = message["model"] as? String ?? "unknown"
         let timestamp = (root["timestamp"] as? String).flatMap(parseTimestamp) ?? now
 
         // Normally the identity is message.id plus requestId. When a line carries neither, those
@@ -72,6 +81,8 @@ public enum ClaudeCodeParser {
         return AIUsageEvent(
             dedupKey: "\(sessionId)|\(identity)",
             timestamp: timestamp,
+            model: model,
+            sessionId: sessionId,
             inputTokens: token(usage, "input_tokens"),
             outputTokens: token(usage, "output_tokens"),
             cacheCreationTokens: token(usage, "cache_creation_input_tokens"),

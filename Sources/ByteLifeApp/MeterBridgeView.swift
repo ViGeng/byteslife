@@ -24,6 +24,13 @@ struct MeterBridgeView: View {
     @AppStorage(ChartWindowStore.key(.mechanics)) private var mechanicsWindow: MeterWindow = .w30m
     @AppStorage(ChartWindowStore.heroKey) private var heroWindow: MeterWindow = .w30m
 
+    /// The one GLOBAL WORK-window duration in minutes, configured from any chart's Custom… editor and
+    /// shared by every menu's WORK option. Defaults to eight hours, the length of a working day.
+    @AppStorage(ChartWindowStore.workMinutesKey) private var workMinutes: Int = ChartWindowStore.defaultWorkMinutes
+    /// The identity of the chart whose Custom… editor popover is open, or nil when none is. One editor at
+    /// a time; the id matches the value passed to `windowMenu`.
+    @State private var customEditorID: String?
+
     private var bridge: MeterBridge { viewModel.meterBridge }
     /// Whether the given channel should render as live: it clears its threshold AND live mode is on.
     private func showsLive(_ channel: MeterChannel) -> Bool { liveMode && channel.isLive }
@@ -55,11 +62,13 @@ struct MeterBridgeView: View {
         )
     }
 
-    /// A compact dim monospaced window picker for a chart title (and the hero card). It reads the current
-    /// window token and, on selection, writes the persisted binding and notifies the view model.
-    private func windowMenu(_ selection: Binding<MeterWindow>) -> some View {
+    /// A compact dim monospaced window picker for a chart title (and the hero card). It lists the four
+    /// fixed windows, the shared WORK window (labelled with its configured hours), and a Custom… item that
+    /// opens the WORK-window editor for this chart. On selection it writes the persisted binding and
+    /// notifies the view model. `id` distinguishes which chart's editor popover is showing.
+    private func windowMenu(_ selection: Binding<MeterWindow>, id: String) -> some View {
         Menu {
-            ForEach(MeterWindow.allCases, id: \.self) { window in
+            ForEach(MeterWindow.fixedCases, id: \.self) { window in
                 Button {
                     selection.wrappedValue = window
                     notifyWindows()
@@ -71,6 +80,18 @@ struct MeterBridgeView: View {
                     }
                 }
             }
+            Divider()
+            Button {
+                selectWork(selection)
+            } label: {
+                let label = "WORK · \(workMinutes / 60)H"
+                if selection.wrappedValue.isCustom {
+                    Label(label, systemImage: "checkmark")
+                } else {
+                    Text(label)
+                }
+            }
+            Button("Custom…") { customEditorID = id }
         } label: {
             Text(selection.wrappedValue.token)
                 .font(.system(size: 9, design: .monospaced).weight(.medium))
@@ -79,6 +100,64 @@ struct MeterBridgeView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .popover(isPresented: Binding(
+            get: { customEditorID == id },
+            set: { if !$0 { customEditorID = nil } }
+        )) {
+            workEditor(selection)
+        }
+    }
+
+    /// Sets a chart to the shared WORK window at the current global duration and notifies the view model.
+    private func selectWork(_ selection: Binding<MeterWindow>) {
+        selection.wrappedValue = .custom(minutes: workMinutes)
+        notifyWindows()
+    }
+
+    /// Updates the one global WORK duration and re-points every chart already on the WORK window to the new
+    /// span, so a duration change moves all of them together, then notifies the view model once.
+    private func applyWorkMinutes(_ minutes: Int) {
+        let clamped = min(MeterWindow.customMaxRange, max(MeterWindow.customMinRange, minutes))
+        workMinutes = clamped
+        for kind in ChartWindowStore.adjustableChannels {
+            if let binding = windowBinding(for: kind), binding.wrappedValue.isCustom {
+                binding.wrappedValue = .custom(minutes: clamped)
+            }
+        }
+        if heroWindow.isCustom { heroWindow = .custom(minutes: clamped) }
+        notifyWindows()
+    }
+
+    /// The compact WORK-window editor: an hours stepper (1 to 48) over the global duration in an adaptive
+    /// palette, plus a button that switches the invoking chart to the WORK window and dismisses.
+    private func workEditor(_ selection: Binding<MeterWindow>) -> some View {
+        let hours = Binding<Int>(
+            get: { max(1, min(48, workMinutes / 60)) },
+            set: { applyWorkMinutes($0 * 60) }
+        )
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("WORK WINDOW")
+                .font(.system(size: 9, design: .monospaced).weight(.semibold))
+                .foregroundStyle(LatticePalette.dim(scheme))
+            Stepper(value: hours, in: 1...48) {
+                Text("\(hours.wrappedValue) h")
+                    .font(.system(.caption, design: .monospaced).weight(.medium))
+                    .monospacedDigit()
+                    .foregroundStyle(LatticePalette.dial(scheme))
+            }
+            Button {
+                selectWork(selection)
+                customEditorID = nil
+            } label: {
+                Text("Use WORK window")
+                    .font(.system(size: 10, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(LatticePalette.teal(scheme))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(12)
+        .frame(width: 168)
+        .background(LatticePalette.card(scheme))
     }
 
     var body: some View {
@@ -227,7 +306,7 @@ struct MeterBridgeView: View {
         .background(cardShape)
         // The hero's own window selector, floated in the corner so the chart keeps its full height.
         .overlay(alignment: .topTrailing) {
-            windowMenu($heroWindow)
+            windowMenu($heroWindow, id: "hero")
                 .padding(.top, 5)
                 .padding(.trailing, 8)
         }
@@ -246,7 +325,7 @@ struct MeterBridgeView: View {
                     .font(.system(.caption2, design: .monospaced).weight(.semibold))
                     .foregroundStyle(color.opacity(0.85))
                 if live { PulseDot(color: color, glow: glow) }
-                if let binding = windowBinding(for: channel.kind) { windowMenu(binding) }
+                if let binding = windowBinding(for: channel.kind) { windowMenu(binding, id: channel.kind.rawValue) }
                 Spacer()
                 Text(channel.rateReadout)
                     .font(.system(.caption, design: .monospaced).weight(.semibold))
@@ -341,7 +420,17 @@ struct MeterBridgeView: View {
             if needsPermission {
                 Menu {
                     Button("Grant Permission…") { viewModel.requestInputPermission() }
-                    Button("Open Input Monitoring Settings…") {
+                    // Revealed once a Grant returned with the grant still absent (macOS suppresses the
+                    // repeat prompt): resets the TCC decision so the prompt genuinely fires again, and
+                    // surfaces an alert if tccutil itself fails.
+                    if viewModel.inputPromptSuppressed {
+                        Button("Reset permission state…") {
+                            if let exitCode = viewModel.resetInputPermission() {
+                                PermissionsHint.presentResetFailure(exitCode: exitCode)
+                            }
+                        }
+                    }
+                    Button("Open System Settings (search “Input Monitoring”)…") {
                         PermissionsHint.openInputMonitoringSettings()
                     }
                 } label: {

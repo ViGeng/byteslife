@@ -255,7 +255,13 @@ public final class GeminiSource: AIUsageSource, @unchecked Sendable {
 
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return }
         let allEvents = GeminiParser.parse(data: data).map {
-            AIIngestEvent(dedupKey: $0.dedupKey, samples: $0.samples())
+            AIIngestEvent(
+                dedupKey: $0.dedupKey, samples: $0.samples(),
+                attribution: AIUsageAttribution(
+                    source: "gemini", model: $0.model,
+                    sessionId: $0.sessionId, timestamp: $0.timestamp
+                )
+            )
         }
 
         let storedMark = counts[path] ?? Int(metaInt(Self.countKey(forPath: path)) ?? 0)

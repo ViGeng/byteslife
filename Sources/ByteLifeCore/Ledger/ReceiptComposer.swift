@@ -188,9 +188,11 @@ public enum ReceiptComposer {
     }
 
     /// The accessory accounts booked after the five reconciled ones, in the same dry grammar: energy in
-    /// watt-hours, files touched, hosts contacted, unlocks, attention sessions, and the day's top app on
-    /// one line. Figures absent from `totals` book as zero; a missing top app reads as a dash. These lines
-    /// are part of the hashed body, so a receipt simply carries more of them than a v0.6 receipt did.
+    /// watt-hours, files touched, hosts contacted, unlocks, attention sessions, commands run, lid opens,
+    /// wakes, and the day's top app on one line. Figures absent from `totals` book as zero; a missing top
+    /// app reads as a dash. The sensor deck's per-minute curves are never printed here — a receipt carries
+    /// only counts. These lines are part of the hashed body, so a receipt simply carries more of them than
+    /// a v0.7 receipt did.
     private static func auxiliarySection(
         totals: [MetricKind: Int64], distinctHosts: Int, topApp: (name: String, seconds: Int64)?
     ) -> [String] {
@@ -203,6 +205,9 @@ public enum ReceiptComposer {
             entry("Hosts Contacted", "", ByteFormatting.grouped(Int64(distinctHosts))),
             entry("Unlocks", "", ByteFormatting.grouped(t(.screenUnlocks))),
             entry("Sessions", "", ByteFormatting.grouped(t(.attentionSessions))),
+            entry("Commands Run", "", ByteFormatting.grouped(t(.commandsRun))),
+            entry("Lid Opens", "", ByteFormatting.grouped(t(.lidOpens))),
+            entry("Wakes", "", ByteFormatting.grouped(t(.systemWakes))),
             entry("Top App", "", app),
             thinRule(),
         ]

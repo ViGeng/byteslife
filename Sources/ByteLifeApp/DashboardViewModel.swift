@@ -36,6 +36,10 @@ final class DashboardViewModel: ObservableObject {
     /// False once a register/unregister attempt failed (typically under `swift run`), so the footer can
     /// disclose that the toggle is unavailable rather than silently doing nothing.
     @Published private(set) var launchAtLoginAvailable: Bool = true
+    /// Set once a Grant attempt returned with the grant still absent (macOS suppressed the repeat prompt).
+    /// The MECHANICS calibrate menu then reveals the "Reset permission state…" affordance. Cleared once a
+    /// reset re-raises the prompt.
+    @Published private(set) var inputPromptSuppressed = false
 
     private static let openInterval: TimeInterval = 2
     private static let idleInterval: TimeInterval = 30
@@ -153,9 +157,24 @@ final class DashboardViewModel: ObservableObject {
         startTimer(interval: Self.idleInterval, publishMeter: false, animated: false)
     }
 
-    /// Raises the Input Monitoring prompt. The panel calls this from the needs-permission affordance.
+    /// Raises the Input Monitoring prompt. The panel calls this from the needs-permission affordance. When
+    /// the request returns with the grant still absent — macOS suppresses the repeat prompt after the
+    /// first decision — this sets `inputPromptSuppressed` so the panel reveals the reset affordance.
     func requestInputPermission() {
-        coordinator.inputCollector.requestPermission()
+        inputPromptSuppressed = coordinator.inputCollector.requestPermission() == .promptSuppressed
+    }
+
+    /// Runs the TCC reset recovery from the panel. Returns tccutil's nonzero exit code on failure, so the
+    /// panel can surface an honest alert, or nil on success, where the prompt has been re-raised and the
+    /// suppressed flag clears.
+    func resetInputPermission() -> Int32? {
+        switch coordinator.inputCollector.resetPermissionState() {
+        case .reprompted:
+            inputPromptSuppressed = false
+            return nil
+        case .failed(let code):
+            return code
+        }
     }
 
     /// Closes today's books, then refreshes so the panel flips to its posted state and shows the stamp.
@@ -231,7 +250,8 @@ final class DashboardViewModel: ObservableObject {
                 energyRunning: aux.availability(forID: "energy") == .running,
                 focusRunning: aux.availability(forID: "focus") == .running,
                 filesRunning: aux.availability(forID: "files") == .running,
-                unlocksRunning: coordinator.registry.availability(forID: "screen") == .running
+                unlocksRunning: coordinator.registry.availability(forID: "screen") == .running,
+                commandsRunning: aux.availability(forID: "shell") == .running
             )
         }
 

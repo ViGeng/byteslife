@@ -185,12 +185,30 @@ private final class TapSession {
     }
 }
 
+/// The result of raising the Input Monitoring prompt. `granted` means the grant is present right after
+/// the request returned; `promptSuppressed` means the request returned but the grant is still absent,
+/// the fingerprint of macOS having already prompted this identity once (later requests silently no-op).
+/// The UI reveals the reset affordance on `promptSuppressed`.
+public enum PermissionRequestOutcome: Equatable, Sendable {
+    case granted
+    case promptSuppressed
+}
+
+/// The result of the TCC-reset recovery. `reprompted` means tccutil cleared the stored decision and the
+/// prompt was re-raised, so the recheck timer observes the grant once the user allows. `failed` carries
+/// tccutil's nonzero exit code, which the caller surfaces honestly as an alert.
+public enum PermissionResetOutcome: Equatable, Sendable {
+    case reprompted
+    case failed(exitCode: Int32)
+}
+
 /// Counts keystrokes and mouse travel with a listen-only `CGEventTap`, gated on Input Monitoring.
 ///
 /// The tap lives on a dedicated thread running a `CFRunLoop`. A drain timer flushes the shared counters
 /// into the store; a slower permission timer catches Input Monitoring being granted or revoked and
 /// starts or stops the tap thread accordingly. The permission prompt is never raised automatically:
-/// only `requestPermission()`, invoked by the UI, calls `CGRequestListenEventAccess()`.
+/// only the UI-invoked `requestPermission()` and its recovery `resetPermissionState()` call
+/// `CGRequestListenEventAccess()`.
 ///
 /// `stop()` (also called from `deinit`) is the only path that releases the tap; the tap thread never
 /// retains the collector, so releasing the collector always runs a clean teardown.
@@ -202,6 +220,9 @@ public final class InputCollector: Collector, @unchecked Sendable {
     private let store: SampleStore
     private let preflight: () -> Bool
     private let request: () -> Void
+    /// Resets the ListenEvent TCC decision and returns tccutil's exit status. Injectable so the recovery
+    /// branching is tested without spawning a process; production runs the real `tccutil reset`.
+    private let resetTCC: () -> Int32
     private let drainInterval: DispatchTimeInterval
     private let recheckInterval: DispatchTimeInterval
     private let queue = DispatchQueue(label: "life.byte.input")
@@ -249,6 +270,7 @@ public final class InputCollector: Collector, @unchecked Sendable {
         recheckInterval: DispatchTimeInterval = .seconds(10),
         preflight: @escaping () -> Bool = { CGPreflightListenEventAccess() },
         request: @escaping () -> Void = { _ = CGRequestListenEventAccess() },
+        resetTCC: @escaping () -> Int32 = { TCCReset.run() },
         tapHealth: TapHealth = TapHealth(),
         healthTotalsProvider: (() -> (inputEvents: Int64, attentiveSeconds: Int64))? = nil,
         tapStarter: (() -> Bool)? = nil
@@ -258,6 +280,7 @@ public final class InputCollector: Collector, @unchecked Sendable {
         self.recheckInterval = recheckInterval
         self.preflight = preflight
         self.request = request
+        self.resetTCC = resetTCC
         self.tapHealth = tapHealth
         self.tapStarterOverride = tapStarter
         // The default provider sums today's input kinds and reads attentive seconds straight from the
@@ -325,9 +348,28 @@ public final class InputCollector: Collector, @unchecked Sendable {
         resetHealth()
     }
 
-    /// The only path that raises the Input Monitoring prompt. The UI calls this from an explicit user action.
-    public func requestPermission() {
+    /// The only path that raises the Input Monitoring prompt. The UI calls this from an explicit user
+    /// action. It re-preflights after the request returns and reports the outcome: `granted` when the
+    /// grant is now present, or `promptSuppressed` when it is still absent (macOS having already prompted
+    /// this identity, so the repeat request silently no-opped). The UI reveals the reset affordance on
+    /// `promptSuppressed`.
+    @discardableResult
+    public func requestPermission() -> PermissionRequestOutcome {
         request()
+        return preflight() ? .granted : .promptSuppressed
+    }
+
+    /// Recovers from a suppressed prompt: resets the ListenEvent TCC decision via tccutil, then re-raises
+    /// the prompt on success so it genuinely fires. Returns `.reprompted` when tccutil succeeded (the
+    /// recheck timer picks up the grant once the user allows) or `.failed` with tccutil's nonzero exit
+    /// code, which the UI surfaces as an honest alert. Runs the reset synchronously; the UI calls it from
+    /// an explicit user action.
+    @discardableResult
+    public func resetPermissionState() -> PermissionResetOutcome {
+        let code = resetTCC()
+        guard code == 0 else { return .failed(exitCode: code) }
+        request()
+        return .reprompted
     }
 
     // MARK: - Drain and permission

@@ -73,6 +73,28 @@ final class CodexSourceTests: XCTestCase {
         XCTAssertEqual(recorded.filter { $0.kind == .aiInputTokens }.reduce(0) { $0 + $1.value }, 600)
     }
 
+    func testAttributesTokensToTheTurnContextModel() throws {
+        let store = try SampleStore(path: dbPath)
+        let path = dateDir.appendingPathComponent("rollout-model.jsonl").path
+        // A turn_context names the model; the token_count snapshots that follow are attributed to it.
+        let lines = [
+            #"{"type":"turn_context","timestamp":"2026-07-06T12:00:00.000Z","payload":{"turn_id":"t1","model":"gpt-5.4-codex"}}"#,
+            #"{"type":"event_msg","timestamp":"2026-07-06T12:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":110}}}}"#,
+            #"{"type":"event_msg","timestamp":"2026-07-06T12:00:05.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":40,"reasoning_output_tokens":0,"total_tokens":340}}}}"#,
+        ].joined(separator: "\n") + "\n"
+        try lines.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let source = CodexSource(root: root, store: store)
+        source.ingest(path: path) { _ in }
+
+        let models = try store.aiModelTotals(dayEpoch: sampleDayEpoch)
+        XCTAssertEqual(models.map(\.model), ["gpt-5.4-codex"])
+        XCTAssertEqual(models.first?.input, 300)   // cumulative 100 then 300 yields deltas 100 + 200
+        XCTAssertEqual(models.first?.output, 40)    // 10 + 30
+        // The session is the rollout file's own identity, opened once.
+        XCTAssertEqual(try store.aiSessionStats(dayEpoch: sampleDayEpoch).count, 1)
+    }
+
     func testCumulativeDecreaseClampsToZero() throws {
         let store = try SampleStore(path: dbPath)
         let path = dateDir.appendingPathComponent("rollout-decrease.jsonl").path

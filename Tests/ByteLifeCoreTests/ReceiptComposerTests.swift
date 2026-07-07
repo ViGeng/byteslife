@@ -21,6 +21,9 @@ final class ReceiptComposerTests: XCTestCase {
         .filesTouched: 1_284,
         .screenUnlocks: 12,
         .attentionSessions: 34,
+        .commandsRun: 217,
+        .lidOpens: 6,
+        .systemWakes: 9,
     ]
 
     /// The accessory figures the AUXILIARY section carries beyond the totals dictionary.
@@ -116,6 +119,10 @@ final class ReceiptComposerTests: XCTestCase {
         XCTAssertTrue(text.contains("27"))
         XCTAssertTrue(text.contains("Unlocks"))
         XCTAssertTrue(text.contains("Sessions"))
+        XCTAssertTrue(text.contains("Commands Run"))
+        XCTAssertTrue(text.contains(ByteFormatting.grouped(217)))
+        XCTAssertTrue(text.contains("Lid Opens"))
+        XCTAssertTrue(text.contains("Wakes"))
         XCTAssertTrue(text.contains("Top App"))
         // The top app reads as one line: short name plus its time.
         XCTAssertTrue(text.contains("Xcode \(ByteFormatting.duration(seconds: 9_000))"))

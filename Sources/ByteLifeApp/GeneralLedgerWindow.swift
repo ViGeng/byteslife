@@ -41,6 +41,12 @@ final class GeneralLedgerViewModel: ObservableObject {
     /// The selected day's (or aggregate period's) accessory accounts: energy, focus, files, hosts, and the
     /// session/unlock memos. Day granularity carries the energy hourly bars; aggregates are figure-only.
     @Published private(set) var selectedAuxiliary: AuxiliaryStory?
+    /// The selected day's (or aggregate period's) COGNITION breakdown: top models with token bars and, for
+    /// a single day, the session memo. Aggregates sum model totals across days and carry no memo.
+    @Published private(set) var selectedCognition: CognitionBreakdown?
+    /// The selected day's (or aggregate period's) SENSORS deck: the muted curve charts (single days only)
+    /// and the sensor count memos. Aggregates sum the counts across days and carry no curves.
+    @Published private(set) var selectedSensors: SensorStory?
 
     /// Today's epoch, so the header can distinguish a still-open today from a closeable past day.
     let todayEpoch: Int64
@@ -184,6 +190,8 @@ final class GeneralLedgerViewModel: ObservableObject {
             selectedStory = nil
             selectedReceipt = nil
             selectedAuxiliary = nil
+            selectedCognition = nil
+            selectedSensors = nil
             return
         }
         selectedReceipt = (try? store.reconciliation(forDayEpoch: day)) ?? nil
@@ -203,6 +211,25 @@ final class GeneralLedgerViewModel: ObservableObject {
         selectedAuxiliary = AuxiliaryStory.build(
             totals: totals, focus: focus, distinctHosts: hosts, energyHourly: energyHourly
         )
+
+        // The COGNITION card's fine-grained view: the day's per-model token totals and its session stats.
+        let modelTotals = (try? store.aiModelTotals(dayEpoch: day)) ?? []
+        let sessionStats = (try? store.aiSessionStats(dayEpoch: day)) ?? AISessionStats(count: 0, averageLength: 0, longestLength: 0)
+        selectedCognition = CognitionBreakdown.build(modelTotals: modelTotals, sessionStats: sessionStats)
+
+        // The SENSORS deck: the five per-minute gauge curves for the day, plus the count memos from the
+        // totals and the read-through meta facts (thermal changes, charging sessions, lifetime cycles).
+        var series: [String: [Int64?]] = [:]
+        for entry in SensorStory.curveGauges {
+            series[entry.gauge] = (try? store.gaugeSeries(gauge: entry.gauge, dayEpoch: day)) ?? []
+        }
+        selectedSensors = SensorStory.build(
+            totals: totals,
+            thermalStateChanges: (try? store.metaInt(ThermalCollector.thermalChangesKey(dayEpoch: day))) ?? 0,
+            chargingSessions: (try? store.metaInt(BatteryCollector.chargingSessionsKey(dayEpoch: day))) ?? 0,
+            batteryCycleCount: try? store.metaInt(BatteryCollector.cycleCountKey),
+            gaugeSeries: series
+        )
     }
 
     /// Shapes the selected aggregate period's story from the cached per-day rollups, with no store query
@@ -213,6 +240,8 @@ final class GeneralLedgerViewModel: ObservableObject {
               let group = periodGroups.first(where: { $0.id == id }) else {
             selectedPeriodStory = nil
             selectedAuxiliary = nil
+            selectedCognition = nil
+            selectedSensors = nil
             return
         }
         selectedPeriodStory = PeriodStory.build(
@@ -228,15 +257,34 @@ final class GeneralLedgerViewModel: ObservableObject {
         var summed: [MetricKind: Int64] = [:]
         var mergedFocus: [String: Int64] = [:]
         var hostsTotal = 0
+        // The sensor counts held in per-day meta keys, summed across the period.
+        var thermalTotal: Int64 = 0
+        var chargingTotal: Int64 = 0
         for day in group.dayEpochs {
             for (kind, value) in totalsByDay[day] ?? [:] { summed[kind, default: 0] += value }
             for (bundle, seconds) in focusByDay[day] ?? [:] { mergedFocus[bundle, default: 0] += seconds }
             hostsTotal += hostsByDay[day] ?? 0
+            thermalTotal += (try? store.metaInt(ThermalCollector.thermalChangesKey(dayEpoch: day))) ?? 0
+            chargingTotal += (try? store.metaInt(BatteryCollector.chargingSessionsKey(dayEpoch: day))) ?? 0
         }
         selectedAuxiliary = AuxiliaryStory.build(
             totals: summed,
             focus: mergedFocus.map { (bundleId: $0.key, seconds: $0.value) },
             distinctHosts: hostsTotal
+        )
+
+        // The aggregate COGNITION breakdown sums per-model totals across days; sessions are a day figure,
+        // so an aggregate carries no session memo.
+        let modelTotals = (try? store.aiModelTotals(dayEpochs: group.dayEpochs)) ?? []
+        selectedCognition = CognitionBreakdown.build(modelTotals: modelTotals, sessionStats: nil)
+
+        // The aggregate SENSORS deck: the summed count memos and no curves. The cycle count is a lifetime
+        // fact read from its single read-through key.
+        selectedSensors = SensorStory.build(
+            totals: summed,
+            thermalStateChanges: thermalTotal,
+            chargingSessions: chargingTotal,
+            batteryCycleCount: try? store.metaInt(BatteryCollector.cycleCountKey)
         )
     }
 }
@@ -530,12 +578,17 @@ struct GeneralLedgerView: View {
                 ScrollView(.vertical) {
                     VStack(spacing: 12) {
                         heroDayChart(story)
-                        accountCard(story.cards[0])          // Token, full width
+                        cognitionCard(kind: story.cards[0].kind, title: story.cards[0].title,
+                                      headline: story.cards[0].headline,
+                                      bars: story.cards[0].hourly, lines: story.cards[0].lines)
                         LazyVGrid(columns: gridColumns, spacing: 12) {
                             ForEach(Array(story.cards.dropFirst()), content: accountCard)
                         }
                         if let aux = vm.selectedAuxiliary {
                             auxiliarySection(aux, showEnergyBars: true)
+                        }
+                        if let sensors = vm.selectedSensors {
+                            sensorsSection(sensors)
                         }
                         if let receipt = vm.selectedReceipt, showingReceipt {
                             receiptSection(receipt)
@@ -688,30 +741,86 @@ struct GeneralLedgerView: View {
     /// One account card: a channel-colored title, the day total right-aligned, the 24 hourly bars in the
     /// channel color, and the account's compact figure rows in the debit/credit/memo colors.
     private func accountCard(_ card: DayStoryCard) -> some View {
-        let color = channelColor(card.kind)
+        accountCardContainer(kind: card.kind, title: card.title, headline: card.headline,
+                             bars: card.hourly, lines: card.lines) { EmptyView() }
+    }
+
+    /// The Token account rendered as the COGNITION card: the same account body, followed by the BY MODEL
+    /// breakdown and the session memo. `bars` is the day's hourly series or an aggregate's per-day series.
+    private func cognitionCard(kind: LedgerAccountKind, title: String, headline: String,
+                               bars: [Int64], lines: [DaySheetLine]) -> some View {
+        accountCardContainer(kind: kind, title: title, headline: headline, bars: bars, lines: lines) {
+            cognitionExtras()
+        }
+    }
+
+    /// The shared account-card container: the channel-colored title and headline, the bar strip, the figure
+    /// rows, and any trailing `extra` content (the COGNITION card's BY MODEL breakdown), on one card.
+    private func accountCardContainer<Extra: View>(
+        kind: LedgerAccountKind, title: String, headline: String,
+        bars: [Int64], lines: [DaySheetLine], @ViewBuilder extra: () -> Extra
+    ) -> some View {
+        let color = channelColor(kind)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(card.title.uppercased())
+                Text(title.uppercased())
                     .font(.system(.caption, design: .monospaced).weight(.semibold))
                     .foregroundStyle(color)
                     .lineLimit(1)
                 Spacer()
-                Text(card.headline)
+                Text(headline)
                     .font(.system(.callout, design: .monospaced).weight(.semibold))
                     .monospacedDigit()
                     .foregroundStyle(dial)
                     .lineLimit(1)
             }
-            channelBars(card.hourly, color: color)
+            channelBars(bars, color: color)
             VStack(spacing: 3) {
-                ForEach(card.lines) { line in
+                ForEach(lines) { line in
                     figureRow(line)
                 }
             }
+            extra()
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(cardShape)
+    }
+
+    /// The COGNITION card's BY MODEL breakdown: the top models with amber token bars against the busiest
+    /// model, and the day's session memo. Renders nothing when no model was booked.
+    @ViewBuilder
+    private func cognitionExtras() -> some View {
+        if let cog = vm.selectedCognition, !cog.models.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                hRule().padding(.vertical, 2)
+                Text("BY MODEL")
+                    .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(dim)
+                VStack(spacing: 5) {
+                    ForEach(cog.models) { row in
+                        HStack(spacing: 8) {
+                            Text(row.label)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(dial.opacity(0.85))
+                                .lineLimit(1)
+                                .frame(width: 132, alignment: .leading)
+                            mini(fraction: row.fraction, color: LatticePalette.amber(scheme))
+                            Text(row.tokenLabel)
+                                .font(.system(.caption2, design: .monospaced))
+                                .monospacedDigit()
+                                .foregroundStyle(dim)
+                                .frame(width: 60, alignment: .trailing)
+                        }
+                    }
+                }
+                if let memo = cog.sessionMemo {
+                    Text(memo)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(dim)
+                }
+            }
+        }
     }
 
     /// A strip of thin bars in the channel color, each normalized to the strip's own peak so the shape
@@ -788,12 +897,17 @@ struct GeneralLedgerView: View {
                 ScrollView(.vertical) {
                     VStack(spacing: 12) {
                         periodHeroChart(story)
-                        periodAccountCard(story.cards[0])        // Token, full width
+                        cognitionCard(kind: story.cards[0].kind, title: story.cards[0].title,
+                                      headline: story.cards[0].headline,
+                                      bars: story.cards[0].perDay, lines: story.cards[0].lines)
                         LazyVGrid(columns: gridColumns, spacing: 12) {
                             ForEach(Array(story.cards.dropFirst()), content: periodAccountCard)
                         }
                         if let aux = vm.selectedAuxiliary {
                             auxiliarySection(aux, showEnergyBars: false)
+                        }
+                        if let sensors = vm.selectedSensors {
+                            sensorsSection(sensors)
                         }
                         coverageSection(story)
                     }
@@ -1077,6 +1191,128 @@ struct GeneralLedgerView: View {
                 .font(.system(.callout, design: .monospaced).weight(.semibold))
                 .monospacedDigit()
                 .foregroundStyle(present ? dial : dim)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardShape)
+    }
+
+    // MARK: - Sensors deck
+
+    /// The SENSORS deck: muted per-minute curve charts (single days only) over the day's temperature,
+    /// charge, ambient lux, brightness, and power, then the sensor count memos (lid opens, wakes, audio
+    /// switches, and so on) as small figure cards. An aggregate period carries no curves, only the summed
+    /// memos. Shaped by `SensorStory`; this only lays it out.
+    private func sensorsSection(_ sensors: SensorStory) -> some View {
+        let curves = sensors.curves.filter(\.hasData)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("SENSORS")
+                    .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(dim)
+                Spacer()
+            }
+            if !curves.isEmpty {
+                LazyVGrid(columns: gridColumns, spacing: 12) {
+                    ForEach(curves) { sensorCurveCard($0) }
+                }
+            }
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 150), spacing: 12, alignment: .top)],
+                alignment: .leading, spacing: 12
+            ) {
+                ForEach(sensors.memos) { sensorMemoCard($0) }
+            }
+        }
+    }
+
+    private struct SensorPoint: Identifiable {
+        /// The contiguous run this point belongs to; a gap starts a new run so the line breaks there.
+        let segment: Int
+        let minute: Int
+        let value: Double
+        var id: Int { minute }
+    }
+
+    /// Splits a gauge's per-minute readings into `SensorPoint`s, tagging each contiguous run of real
+    /// readings with its own segment. Charting each segment as a separate series leaves an honest gap
+    /// wherever the sensor was silent, rather than drawing a line through a fabricated zero.
+    private func sensorPoints(_ points: [Int64?]) -> [SensorPoint] {
+        var result: [SensorPoint] = []
+        var segment = 0
+        var inGap = true
+        for (minute, reading) in points.enumerated() {
+            if let reading {
+                if inGap { segment += 1; inGap = false }
+                result.append(SensorPoint(segment: segment, minute: minute, value: Double(reading)))
+            } else {
+                inGap = true
+            }
+        }
+        return result
+    }
+
+    /// One muted sensor curve: the gauge's label over its latest reading, and a dim channel-neutral line/
+    /// area chart of the day's per-minute readings, broken into segments so silent stretches show as gaps.
+    private func sensorCurveCard(_ curve: SensorCurve) -> some View {
+        let tone = dial.opacity(0.5)
+        let points = sensorPoints(curve.points)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(curve.label)
+                    .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(dim)
+                    .lineLimit(1)
+                Spacer()
+                Text(curve.latest ?? "—")
+                    .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(dial)
+            }
+            Chart(points) { point in
+                AreaMark(x: .value("Minute", point.minute), y: .value("Reading", point.value),
+                         series: .value("Segment", point.segment))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(tone.opacity(0.18))
+                LineMark(x: .value("Minute", point.minute), y: .value("Reading", point.value),
+                         series: .value("Segment", point.segment))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(StrokeStyle(lineWidth: 1.2))
+                    .foregroundStyle(tone)
+            }
+            .chartLegend(.hidden)
+            .chartYAxis(.hidden)
+            .chartXScale(domain: 0...1440)
+            .chartXAxis {
+                AxisMarks(values: [0, 360, 720, 1080, 1440]) { value in
+                    AxisGridLine().foregroundStyle(LatticePalette.hairline(scheme))
+                    AxisValueLabel {
+                        if let minute = value.as(Int.self) {
+                            Text("\(minute / 60)")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(dim)
+                        }
+                    }
+                }
+            }
+            .frame(height: 46)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardShape)
+    }
+
+    /// One sensor count memo as a small figure card: a dim label over its grouped figure.
+    private func sensorMemoCard(_ memo: SensorMemo) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(memo.label)
+                .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                .foregroundStyle(dim)
+                .lineLimit(1)
+            Text(memo.value)
+                .font(.system(.callout, design: .monospaced).weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(dial)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

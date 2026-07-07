@@ -23,7 +23,7 @@ public struct AuxiliaryChip: Equatable, Sendable, Identifiable {
 }
 
 /// The compact figures-only strip that sits above the reconcile bar: energy today, the top app and its
-/// time, files touched, distinct hosts, and unlocks. No charts, no rates — just the day's accessory
+/// time, files touched, distinct hosts, unlocks, and commands run. No charts, no rates — just the day's accessory
 /// figures in the panel's dry grammar. Shaped purely from the day's totals, the single top-focus app, and
 /// the distinct-host count, so every figure and every dash decision is covered by `swift test` with no
 /// clock, locale, or I/O of its own.
@@ -50,7 +50,8 @@ public struct AuxiliaryStrip: Equatable, Sendable {
         energyRunning: Bool,
         focusRunning: Bool,
         filesRunning: Bool,
-        unlocksRunning: Bool
+        unlocksRunning: Bool,
+        commandsRunning: Bool = false
     ) -> AuxiliaryStrip {
         var chips: [AuxiliaryChip] = []
 
@@ -90,6 +91,10 @@ public struct AuxiliaryStrip: Equatable, Sendable {
         }
 
         chips.append(countChip(key: "unlocks", label: "UNLOCKS", totals: totals, kind: .screenUnlocks, running: unlocksRunning))
+
+        // Commands run today, from the shell-history collector. A dim dash while the collector is off, a
+        // genuine count (0 or more) while it runs.
+        chips.append(countChip(key: "commands", label: "COMMANDS", totals: totals, kind: .commandsRun, running: commandsRunning))
 
         return AuxiliaryStrip(chips: chips)
     }

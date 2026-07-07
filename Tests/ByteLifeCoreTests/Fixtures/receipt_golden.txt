@@ -35,6 +35,9 @@ AUXILIARY
   Hosts Contacted                     27
   Unlocks                             12
   Sessions                            34
+  Commands Run                       217
+  Lid Opens                            6
+  Wakes                                9
   Top App                   Xcode 2h 30m
 ----------------------------------------
 POSTED BYTE VOLUME                8.0 GB
@@ -45,5 +48,5 @@ POSTED BYTE VOLUME                8.0 GB
 ----------------------------------------
               * BALANCED *
 ----------------------------------------
-Content hash            cc9977e099bd652e
+Content hash            4a31f2c61cf353e2
 ========================================

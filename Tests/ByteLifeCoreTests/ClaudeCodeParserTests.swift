@@ -101,6 +101,20 @@ final class ClaudeCodeParserTests: XCTestCase {
         XCTAssertNil(ClaudeCodeParser.parse(line: ""))
     }
 
+    func testExtractsModelAndSessionId() {
+        let line = #"{"type":"assistant","sessionId":"S7","requestId":"R1","uuid":"U1","message":{"id":"M1","model":"claude-opus-4","usage":{"input_tokens":1}}}"#
+        let event = ClaudeCodeParser.parse(line: line)
+        XCTAssertEqual(event?.model, "claude-opus-4")
+        XCTAssertEqual(event?.sessionId, "S7")
+    }
+
+    func testMissingModelReadsUnknown() {
+        // assistantLine() carries a usage block but no model field.
+        let event = ClaudeCodeParser.parse(line: assistantLine())
+        XCTAssertEqual(event?.model, "unknown")
+        XCTAssertEqual(event?.sessionId, "S1")
+    }
+
     func testSamplesOmitsZeroChannels() {
         let event = ClaudeCodeParser.parse(line: assistantLine(usage: #"{"input_tokens":200,"output_tokens":20}"#))!
         let kinds = Set(event.samples().map { $0.kind })

@@ -64,7 +64,23 @@ final class AppCoordinator {
         let focus = AppFocusCollector(store: store)
         let files = FilesTouchedCollector(store: store, appDataDir: appDataDir)
         let hosts = HostsSeenCollector(store: store)
-        auxiliaryRegistry = CollectorRegistry(collectors: [energy, focus, files, hosts])
+        let shell = ShellHistoryCollector(store: store)
+        // The sensor deck: lid, thermals, battery, ambient light, brightness, wakes/boots, audio, and
+        // Bluetooth. Each owns its serial queue and degrades to sourceMissing where its hardware is absent,
+        // so a machine without a given sensor never flags a receipt (the auxiliary registry is kept out of
+        // the flagship stamp snapshot).
+        let lid = LidCollector(store: store)
+        let thermal = ThermalCollector(store: store)
+        let battery = BatteryCollector(store: store)
+        let ambient = AmbientLightCollector(store: store)
+        let brightness = BrightnessCollector(store: store)
+        let wakes = WakesCollector(store: store)
+        let audio = AudioCollector(store: store)
+        let bluetooth = BluetoothCollector(store: store)
+        auxiliaryRegistry = CollectorRegistry(collectors: [
+            energy, focus, files, hosts, shell,
+            lid, thermal, battery, ambient, brightness, wakes, audio, bluetooth,
+        ])
 
         reconciler = Reconciler(store: store)
         registry.startAll()

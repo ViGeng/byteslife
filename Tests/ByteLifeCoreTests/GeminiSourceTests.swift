@@ -72,6 +72,12 @@ final class GeminiSourceTests: XCTestCase {
         XCTAssertEqual(totals[.aiInputTokens], 300)
         XCTAssertEqual(totals[.aiOutputTokens], 40)
         XCTAssertEqual(totals[.aiCacheReadTokens], 5)
+
+        // Both turns carry model "gemini-2.5-pro" in session "gem-sess-1"; attribution booked alongside.
+        let models = try store.aiModelTotals(dayEpoch: sampleDayEpoch)
+        XCTAssertEqual(models.map(\.model), ["gemini-2.5-pro"])
+        XCTAssertEqual(models.first?.input, 300)
+        XCTAssertEqual(try store.aiSessionStats(dayEpoch: sampleDayEpoch).count, 1)
     }
 
     func testRewriteInPlaceDedupsAndAddsOnlyNewMessages() throws {

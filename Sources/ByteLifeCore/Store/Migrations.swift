@@ -16,7 +16,7 @@ func execSQL(_ db: OpaquePointer, _ sql: String) throws {
 /// up-to-date database is a no-op because the version already matches.
 enum Migrations {
     /// Schema version this build targets. Bump alongside a new `applyVN` step.
-    static let currentVersion: Int32 = 3
+    static let currentVersion: Int32 = 4
 
     static func migrate(_ db: OpaquePointer) throws {
         if try userVersion(db) < 1 {
@@ -31,10 +31,14 @@ enum Migrations {
             try applyV3(db)
             try setUserVersion(db, 3)
         }
+        if try userVersion(db) < 4 {
+            try applyV4(db)
+            try setUserVersion(db, 4)
+        }
     }
 
-    // `applyV1` and `applyV2` are visible to the migration test, which builds a genuine populated
-    // prior-version store and reopens it through `migrate` to prove the v3 step is additive.
+    // `applyV1` through `applyV4` are visible to the migration tests, each of which builds a genuine
+    // populated prior-version store and reopens it through `migrate` to prove the next step is additive.
     static func applyV1(_ db: OpaquePointer) throws {
         try execSQL(db, """
             CREATE TABLE IF NOT EXISTS samples (
@@ -80,7 +84,7 @@ enum Migrations {
     /// cannot hold (it is single-dimensional), keyed by day and bundle id with accumulating seconds.
     /// `hosts_seen` is a per-day dedup set of salted remote-host hashes; the metric is its distinct
     /// count and no hostname is ever stored. Purely additive, leaving every v1 and v2 table untouched.
-    private static func applyV3(_ db: OpaquePointer) throws {
+    static func applyV3(_ db: OpaquePointer) throws {
         try execSQL(db, """
             CREATE TABLE IF NOT EXISTS focus (
                 day_epoch INTEGER NOT NULL,
@@ -94,6 +98,47 @@ enum Migrations {
                 day_epoch INTEGER NOT NULL,
                 host_hash TEXT    NOT NULL,
                 PRIMARY KEY (day_epoch, host_hash)
+            ) WITHOUT ROWID;
+            """)
+    }
+
+    /// Additive step for fine-grained AI and sampled sensor curves. `ai_models` is the per-day,
+    /// per-source, per-model token ledger the single-dimensional samples table cannot hold, accumulated
+    /// with UPSERT. `ai_sessions` records each AI session's first/last activity, attributed to the day of
+    /// its first sighting (indexed on `day_epoch` so the day-scoped stats query stays a single range).
+    /// `gauges` holds per-minute sensor READINGS (temperature, charge, lux, and so on) that are replaced,
+    /// not accumulated, because a gauge is a level and not a counter. Purely additive, leaving every v1
+    /// through v3 table untouched.
+    static func applyV4(_ db: OpaquePointer) throws {
+        try execSQL(db, """
+            CREATE TABLE IF NOT EXISTS ai_models (
+                day_epoch      INTEGER NOT NULL,
+                source         TEXT    NOT NULL,
+                model          TEXT    NOT NULL,
+                input          INTEGER NOT NULL,
+                output         INTEGER NOT NULL,
+                cache_creation INTEGER NOT NULL,
+                cache_read     INTEGER NOT NULL,
+                PRIMARY KEY (day_epoch, source, model)
+            ) WITHOUT ROWID;
+            """)
+        try execSQL(db, """
+            CREATE TABLE IF NOT EXISTS ai_sessions (
+                session_id TEXT PRIMARY KEY,
+                source     TEXT    NOT NULL,
+                first_seen INTEGER NOT NULL,
+                last_seen  INTEGER NOT NULL,
+                day_epoch  INTEGER NOT NULL
+            );
+            """)
+        try execSQL(db, "CREATE INDEX IF NOT EXISTS ai_sessions_by_day ON ai_sessions (day_epoch);")
+        try execSQL(db, """
+            CREATE TABLE IF NOT EXISTS gauges (
+                day_epoch INTEGER NOT NULL,
+                minute    INTEGER NOT NULL,
+                gauge     TEXT    NOT NULL,
+                value     INTEGER NOT NULL,
+                PRIMARY KEY (day_epoch, minute, gauge)
             ) WITHOUT ROWID;
             """)
     }

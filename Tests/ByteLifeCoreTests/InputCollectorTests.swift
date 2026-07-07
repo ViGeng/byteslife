@@ -88,6 +88,66 @@ final class InputCollectorTests: XCTestCase {
         collector.stop()
     }
 
+    func testRequestPermissionReportsGrantedWhenGrantAppears() throws {
+        let (store, directory) = try TempStore.make()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // The request "grants": preflight flips true, mirroring the user allowing the prompt.
+        var granted = false
+        let collector = InputCollector(
+            store: store,
+            preflight: { granted },
+            request: { granted = true }
+        )
+        XCTAssertEqual(collector.requestPermission(), .granted)
+    }
+
+    func testRequestPermissionReportsPromptSuppressedWhenGrantStaysAbsent() throws {
+        let (store, directory) = try TempStore.make()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // The request returns but preflight stays false: macOS suppressed the repeat prompt.
+        let collector = InputCollector(store: store, preflight: { false }, request: {})
+        XCTAssertEqual(collector.requestPermission(), .promptSuppressed)
+    }
+
+    func testResetPermissionStateRepromptsOnSuccessAndReRaisesPromptOnce() throws {
+        let (store, directory) = try TempStore.make()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        var requests = 0
+        let collector = InputCollector(
+            store: store,
+            preflight: { false },
+            request: { requests += 1 },
+            resetTCC: { 0 }
+        )
+        XCTAssertEqual(collector.resetPermissionState(), .reprompted)
+        XCTAssertEqual(requests, 1, "a successful reset re-raises the prompt exactly once")
+    }
+
+    func testResetPermissionStateReportsFailureExitCodeAndNeverReprompts() throws {
+        let (store, directory) = try TempStore.make()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        var requests = 0
+        let collector = InputCollector(
+            store: store,
+            preflight: { false },
+            request: { requests += 1 },
+            resetTCC: { 42 }
+        )
+        XCTAssertEqual(collector.resetPermissionState(), .failed(exitCode: 42))
+        XCTAssertEqual(requests, 0, "a failed reset must not re-raise the prompt")
+    }
+
+    func testTCCResetArgumentsTargetListenEventForTheBundle() {
+        XCTAssertEqual(
+            TCCReset.arguments(bundleID: "com.vigeng.bytelife"),
+            ["reset", "ListenEvent", "com.vigeng.bytelife"]
+        )
+    }
+
     func testStartAndStopAreIdempotent() throws {
         let (store, directory) = try TempStore.make()
         defer { try? FileManager.default.removeItem(at: directory) }

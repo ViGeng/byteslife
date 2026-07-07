@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import ByteLifeCore
 
 final class SampleStoreTests: XCTestCase {
@@ -105,24 +106,70 @@ final class SampleStoreTests: XCTestCase {
     func testIngestLandsKeysSamplesAndMetaAtomically() throws {
         let store = try SampleStore(path: dbPath)
         let t = date(dayOffset: 0, minute: 5)
+        let t2 = t.addingTimeInterval(120)   // same session, two minutes later
+        let day = DayBucket.dayEpoch(for: t)
+        func attr(_ ts: Date) -> AIUsageAttribution {
+            AIUsageAttribution(source: "claudeCode", model: "claude", sessionId: "sess1", timestamp: ts)
+        }
         let events = [
-            AIIngestEvent(dedupKey: "k1", samples: [Sample(kind: .aiInputTokens, value: 100, timestamp: t)]),
-            AIIngestEvent(dedupKey: "k2", samples: [Sample(kind: .aiInputTokens, value: 200, timestamp: t)]),
+            AIIngestEvent(dedupKey: "k1", samples: [Sample(kind: .aiInputTokens, value: 100, timestamp: t)],
+                          attribution: attr(t)),
+            AIIngestEvent(dedupKey: "k2", samples: [Sample(kind: .aiInputTokens, value: 200, timestamp: t2)],
+                          attribution: attr(t2)),
         ]
         let recorded = try store.ingest(events: events, meta: [("off", 500), ("ino", 42)])
 
-        // All three effects landed together: newly seen samples, their totals, and the meta offsets.
+        // Every effect landed together in the one transaction: samples, meta offsets, the per-model
+        // day total, and the session's first/last bounds.
         XCTAssertEqual(recorded.reduce(0) { $0 + $1.value }, 300)
-        XCTAssertEqual(try store.totals(forDayEpoch: DayBucket.dayEpoch(for: t))[.aiInputTokens], 300)
+        XCTAssertEqual(try store.totals(forDayEpoch: day)[.aiInputTokens], 300)
         XCTAssertEqual(try store.metaInt("off"), 500)
         XCTAssertEqual(try store.metaInt("ino"), 42)
+        let models = try store.aiModelTotals(dayEpoch: day)
+        XCTAssertEqual(models.map(\.model), ["claude"])
+        XCTAssertEqual(models.first?.input, 300)
+        let sessions = try store.aiSessionStats(dayEpoch: day)
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.longestLength, 120)
 
-        // Re-ingesting the same keys records nothing new (dedup) but still advances the offset meta.
+        // Re-ingesting the same keys records nothing new (dedup) but still advances the offset meta. The
+        // model total and the session bounds are exactly-once too: they are gated on the newly-seen key,
+        // so a retry never doubles them.
         let again = try store.ingest(events: events, meta: [("off", 900), ("ino", 43)])
         XCTAssertTrue(again.isEmpty)
-        XCTAssertEqual(try store.totals(forDayEpoch: DayBucket.dayEpoch(for: t))[.aiInputTokens], 300)
+        XCTAssertEqual(try store.totals(forDayEpoch: day)[.aiInputTokens], 300)
+        XCTAssertEqual(try store.aiModelTotals(dayEpoch: day).first?.input, 300)
+        XCTAssertEqual(try store.aiSessionStats(dayEpoch: day).count, 1)
         XCTAssertEqual(try store.metaInt("off"), 900)
         XCTAssertEqual(try store.metaInt("ino"), 43)
+    }
+
+    /// A genuine failure partway through `ingest` must roll the WHOLE batch back: no dedup key, no
+    /// samples, no meta, no model row, no session row. The failure is induced by dropping `ai_models`
+    /// from a second connection so the attributed upsert can no longer prepare inside the transaction.
+    func testIngestRollsBackEntireBatchWhenAModelWriteFails() throws {
+        let store = try SampleStore(path: dbPath)
+        let t = date(dayOffset: 0, minute: 5)
+        let day = DayBucket.dayEpoch(for: t)
+
+        // Sabotage the schema out-of-band: drop the table the attributed ingest needs.
+        var sabotage: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(dbPath, &sabotage, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+        let saboteur = try XCTUnwrap(sabotage)
+        try execSQL(saboteur, "DROP TABLE ai_models;")
+        sqlite3_close_v2(saboteur)
+
+        let events = [AIIngestEvent(
+            dedupKey: "doomed",
+            samples: [Sample(kind: .aiInputTokens, value: 100, timestamp: t)],
+            attribution: AIUsageAttribution(source: "codex", model: "gpt", sessionId: "s", timestamp: t)
+        )]
+        XCTAssertThrowsError(try store.ingest(events: events, meta: [("off", 500)]))
+
+        // Nothing from the failed batch persisted: the key is still unseen, no samples, no meta.
+        XCTAssertTrue(try store.totals(forDayEpoch: day).isEmpty)
+        XCTAssertNil(try store.metaInt("off"))
+        XCTAssertTrue(try store.markSeen(dedupKey: "doomed", dayEpoch: day))
     }
 
     func testIngestRecordsFirstSeenDayNotEventDayForPruning() throws {
@@ -291,5 +338,102 @@ final class SampleStoreTests: XCTestCase {
         // The old entry was dropped, so re-marking it inserts anew (true); the recent one survives (false).
         XCTAssertTrue(try store.markSeen(dedupKey: "old", dayEpoch: old))
         XCTAssertFalse(try store.markSeen(dedupKey: "recent", dayEpoch: recent))
+    }
+
+    // MARK: - AI model & session ledgers
+
+    /// Ingests an attributed event whose day is `dayOffset`, session `sessionId`, spanning `spanSeconds`.
+    private func ingestAI(
+        into store: SampleStore, key: String, dayOffset: Int, minute: Int, source: String,
+        model: String, sessionId: String, input: Int64, output: Int64 = 0, spanSeconds: Int = 0
+    ) throws {
+        let start = date(dayOffset: dayOffset, minute: minute)
+        var samples = [Sample(kind: .aiInputTokens, value: input, timestamp: start)]
+        if output != 0 { samples.append(Sample(kind: .aiOutputTokens, value: output, timestamp: start)) }
+        try store.ingest(
+            events: [AIIngestEvent(dedupKey: key + ":a", samples: samples,
+                attribution: AIUsageAttribution(source: source, model: model, sessionId: sessionId, timestamp: start))],
+            meta: []
+        )
+        if spanSeconds > 0 {
+            // A later event in the SAME session extends its last_seen without opening a new session.
+            let end = start.addingTimeInterval(TimeInterval(spanSeconds))
+            try store.ingest(
+                events: [AIIngestEvent(dedupKey: key + ":b",
+                    samples: [Sample(kind: .aiOutputTokens, value: 1, timestamp: end)],
+                    attribution: AIUsageAttribution(source: source, model: model, sessionId: sessionId, timestamp: end))],
+                meta: []
+            )
+        }
+    }
+
+    func testAIModelTotalsGroupByModelSingleDayAndAcrossDays() throws {
+        let store = try SampleStore(path: dbPath)
+        // Day 0: two Claude models plus a Codex model.
+        try ingestAI(into: store, key: "d0-a", dayOffset: 0, minute: 10, source: "claudeCode", model: "opus", sessionId: "s1", input: 100, output: 40)
+        try ingestAI(into: store, key: "d0-b", dayOffset: 0, minute: 11, source: "claudeCode", model: "opus", sessionId: "s1", input: 50)
+        try ingestAI(into: store, key: "d0-c", dayOffset: 0, minute: 12, source: "claudeCode", model: "haiku", sessionId: "s2", input: 5)
+        try ingestAI(into: store, key: "d0-d", dayOffset: 0, minute: 13, source: "codex", model: "gpt", sessionId: "s3", input: 200)
+        // Day 1: more opus.
+        try ingestAI(into: store, key: "d1-a", dayOffset: 1, minute: 10, source: "claudeCode", model: "opus", sessionId: "s4", input: 300)
+
+        let day0 = DayBucket.dayEpoch(for: date(dayOffset: 0, minute: 0))
+        let day1 = DayBucket.dayEpoch(for: date(dayOffset: 1, minute: 0))
+        let single = try store.aiModelTotals(dayEpoch: day0)
+        // Heaviest first: codex/gpt (200) then claudeCode/opus (150+40) then claudeCode/haiku (5).
+        XCTAssertEqual(single.map(\.model), ["gpt", "opus", "haiku"])
+        XCTAssertEqual(single.first { $0.model == "opus" }?.input, 150)
+        XCTAssertEqual(single.first { $0.model == "opus" }?.output, 40)
+
+        // Across both days the two opus rows collapse into one grouped total (150 + 300 input).
+        let across = try store.aiModelTotals(dayEpochs: [day0, day1])
+        XCTAssertEqual(across.first { $0.source == "claudeCode" && $0.model == "opus" }?.input, 450)
+        XCTAssertEqual(across.filter { $0.model == "opus" }.count, 1)
+    }
+
+    func testAISessionStatsCountsSessionsByFirstSeenDay() throws {
+        let store = try SampleStore(path: dbPath)
+        // Two sessions open on day 0: one spanning 300 s, one a single instant (length 0).
+        try ingestAI(into: store, key: "s-a", dayOffset: 0, minute: 10, source: "codex", model: "gpt", sessionId: "sA", input: 10, spanSeconds: 300)
+        try ingestAI(into: store, key: "s-b", dayOffset: 0, minute: 20, source: "codex", model: "gpt", sessionId: "sB", input: 10)
+        // One session opens on day 1.
+        try ingestAI(into: store, key: "s-c", dayOffset: 1, minute: 10, source: "codex", model: "gpt", sessionId: "sC", input: 10, spanSeconds: 100)
+
+        let day0 = DayBucket.dayEpoch(for: date(dayOffset: 0, minute: 0))
+        let stats0 = try store.aiSessionStats(dayEpoch: day0)
+        XCTAssertEqual(stats0.count, 2)
+        XCTAssertEqual(stats0.longestLength, 300)
+        XCTAssertEqual(stats0.averageLength, 150)   // (300 + 0) / 2
+
+        let day1 = DayBucket.dayEpoch(for: date(dayOffset: 1, minute: 0))
+        XCTAssertEqual(try store.aiSessionStats(dayEpoch: day1).count, 1)
+
+        // A day with no sessions reports zeros, never a nil.
+        let emptyDay = DayBucket.dayEpoch(for: date(dayOffset: 5, minute: 0))
+        XCTAssertEqual(try store.aiSessionStats(dayEpoch: emptyDay), AISessionStats(count: 0, averageLength: 0, longestLength: 0))
+    }
+
+    // MARK: - Gauges
+
+    func testRecordGaugeReplacesAndSeriesLeavesGapsNil() throws {
+        let store = try SampleStore(path: dbPath)
+        let day = DayBucket.dayEpoch(for: date(dayOffset: 0, minute: 0))
+        try store.recordGauge(dayEpoch: day, minute: 5, gauge: "cpuTemperature", value: 400)
+        // A gauge is a reading, not an accumulator: a second write to the same cell REPLACES it.
+        try store.recordGauge(dayEpoch: day, minute: 5, gauge: "cpuTemperature", value: 455)
+        try store.recordGauge(dayEpoch: day, minute: 9, gauge: "cpuTemperature", value: 0)   // zero is a real reading
+        // A different gauge in the same minute is independent.
+        try store.recordGauge(dayEpoch: day, minute: 5, gauge: "fanRPM", value: 1200)
+
+        let temps = try store.gaugeSeries(gauge: "cpuTemperature", dayEpoch: day)
+        XCTAssertEqual(temps.count, 1440)
+        XCTAssertEqual(temps[5], 455)         // replaced, not summed to 855
+        XCTAssertEqual(temps[9], 0)           // zero reading is present, distinct from a gap
+        XCTAssertNil(temps[6])                // an untouched minute is honestly absent
+        XCTAssertEqual(try store.gaugeSeries(gauge: "fanRPM", dayEpoch: day)[5], 1200)
+
+        // Out-of-range minutes are a no-op, and an unread gauge is all nils.
+        try store.recordGauge(dayEpoch: day, minute: 1440, gauge: "cpuTemperature", value: 999)
+        XCTAssertEqual(try store.gaugeSeries(gauge: "ambientLux", dayEpoch: day), Array(repeating: nil, count: 1440))
     }
 }

@@ -72,8 +72,9 @@ final class MigrationsV3Tests: XCTestCase {
             XCTAssertEqual(try store.distinctHosts(dayEpoch: dayEpoch), 1)
         }
 
-        // The store closed with the block; a fresh raw handle confirms the version advanced to 3.
-        XCTAssertEqual(try readUserVersion(), 3)
+        // The store closed with the block; a fresh raw handle confirms the version advanced through the
+        // v3 step to the build's current target (later additive steps run too and leave v3's tables intact).
+        XCTAssertEqual(try readUserVersion(), Migrations.currentVersion)
     }
 
     private func readUserVersion() throws -> Int32 {

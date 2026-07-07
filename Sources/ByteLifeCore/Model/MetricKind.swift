@@ -24,6 +24,20 @@ public enum MetricKind: String, CaseIterable, Sendable {
     case energyMilliwattHours
     /// File create/modify/rename events under the home directory, counted (never named).
     case filesTouched
+    /// Shell history entries appended to `~/.zsh_history` and `~/.bash_history`, counted (never stored).
+    case commandsRun
+    /// Lid open transitions (a clamshell going from closed to open), counted by the lid sensor.
+    case lidOpens
+    /// System wakes from sleep, one per `NSWorkspace.didWakeNotification`.
+    case systemWakes
+    /// System boots, incremented when the kernel boot time changes between launches.
+    case systemBoots
+    /// Default audio output device switches, one per CoreAudio default-device change.
+    case audioDeviceSwitches
+    /// Bluetooth peripheral connect events, counted as the rise in the connected-device count.
+    case btConnects
+    /// Output-volume changes beyond a small epsilon, sampled by the audio collector.
+    case volumeChanges
 
     public var family: MetricFamily {
         switch self {
@@ -37,7 +51,9 @@ public enum MetricKind: String, CaseIterable, Sendable {
             return .screen
         case .inputKeystrokes, .inputMouseMilliPixels, .inputClicks, .inputScrollUnits:
             return .input
-        case .energyMilliwattHours, .filesTouched:
+        case .energyMilliwattHours, .filesTouched, .commandsRun,
+             .lidOpens, .systemWakes, .systemBoots,
+             .audioDeviceSwitches, .btConnects, .volumeChanges:
             return .auxiliary
         }
     }

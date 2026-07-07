@@ -31,6 +31,18 @@ final class GeminiParserTests: XCTestCase {
         XCTAssertEqual(events.map(\.dedupKey), ["gemini:S|m1"])
     }
 
+    func testExtractsModelAndSessionId() {
+        let json = #"{"sessionId":"gem-1","messages":[{"id":"m1","model":"gemini-2.5-pro","tokens":{"input":1,"output":0,"cached":0,"thoughts":0,"tool":0,"total":1}}]}"#
+        let event = GeminiParser.parse(data: data(json)).first
+        XCTAssertEqual(event?.model, "gemini-2.5-pro")
+        XCTAssertEqual(event?.sessionId, "gem-1")
+    }
+
+    func testMissingModelReadsUnknown() {
+        let json = #"{"sessionId":"gem-1","messages":[{"id":"m1","tokens":{"input":1,"output":0,"cached":0,"thoughts":0,"tool":0,"total":1}}]}"#
+        XCTAssertEqual(GeminiParser.parse(data: data(json)).first?.model, "unknown")
+    }
+
     func testMalformedJSONReturnsEmpty() {
         XCTAssertTrue(GeminiParser.parse(data: data("{ not json")).isEmpty)
         XCTAssertTrue(GeminiParser.parse(data: Data()).isEmpty)

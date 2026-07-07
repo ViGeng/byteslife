@@ -9,17 +9,19 @@ final class AuxiliaryStripTests: XCTestCase {
     /// Every sensor running and every figure booked: each chip carries its formatted figure and reads present.
     func testChipsCarryTheAccessoryFiguresInOrder() {
         let strip = AuxiliaryStrip.build(
-            totals: [.energyMilliwattHours: 12_400, .filesTouched: 312, .screenUnlocks: 7],
+            totals: [.energyMilliwattHours: 12_400, .filesTouched: 312, .screenUnlocks: 7, .commandsRun: 58],
             topFocus: (bundleId: "com.apple.Safari", seconds: 2_700),  // 45 minutes
             distinctHosts: 9,
-            energyRunning: true, focusRunning: true, filesRunning: true, unlocksRunning: true
+            energyRunning: true, focusRunning: true, filesRunning: true, unlocksRunning: true,
+            commandsRunning: true
         )
-        XCTAssertEqual(strip.chips.map(\.key), ["energy", "focus", "files", "hosts", "unlocks"])
+        XCTAssertEqual(strip.chips.map(\.key), ["energy", "focus", "files", "hosts", "unlocks", "commands"])
         XCTAssertEqual(chip(strip, "energy").value, "12.4 Wh")
         XCTAssertEqual(chip(strip, "focus").value, "Safari 45m")
         XCTAssertEqual(chip(strip, "files").value, "312")
         XCTAssertEqual(chip(strip, "hosts").value, "9")
         XCTAssertEqual(chip(strip, "unlocks").value, "7")
+        XCTAssertEqual(chip(strip, "commands").value, "58")
         XCTAssertTrue(strip.chips.allSatisfy(\.present))
     }
 
@@ -64,6 +66,26 @@ final class AuxiliaryStripTests: XCTestCase {
         XCTAssertTrue(chip(strip, "unlocks").present)
         XCTAssertFalse(chip(strip, "energy").present)
         XCTAssertEqual(chip(strip, "energy").value, AuxiliaryStrip.dash)
+    }
+
+    /// The commands chip follows the shell collector: a dim dash while it is off, a genuine count while
+    /// it runs (0 when it has booked nothing yet).
+    func testCommandsChipFollowsShellCollector() {
+        let off = AuxiliaryStrip.build(
+            totals: [.commandsRun: 12], topFocus: nil, distinctHosts: nil,
+            energyRunning: false, focusRunning: false, filesRunning: false, unlocksRunning: false,
+            commandsRunning: false
+        )
+        XCTAssertEqual(chip(off, "commands").value, AuxiliaryStrip.dash)
+        XCTAssertFalse(chip(off, "commands").present)
+
+        let idle = AuxiliaryStrip.build(
+            totals: [:], topFocus: nil, distinctHosts: nil,
+            energyRunning: false, focusRunning: false, filesRunning: false, unlocksRunning: false,
+            commandsRunning: true
+        )
+        XCTAssertEqual(chip(idle, "commands").value, "0")
+        XCTAssertTrue(chip(idle, "commands").present)
     }
 
     /// Focus presence follows its sensor, not its app data: running with a foreground app reads the app;

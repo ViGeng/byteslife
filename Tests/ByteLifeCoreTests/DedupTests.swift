@@ -54,6 +54,14 @@ final class DedupTests: XCTestCase {
         // Cache channels sum across the three distinct events: 5 + 0 + 7 and 2 + 0 + 1.
         XCTAssertEqual(totals[.aiCacheCreationTokens], 12)
         XCTAssertEqual(totals[.aiCacheReadTokens], 3)
+
+        // Fine-grained attribution booked in the same ingest: M1 carries model "claude"; M2 and M3 carry
+        // none and fall to "unknown". All lines belong to the one session S1.
+        let models = try store.aiModelTotals(dayEpoch: sampleDayEpoch)
+        XCTAssertEqual(Set(models.map(\.model)), ["claude", "unknown"])
+        XCTAssertEqual(models.first { $0.model == "claude" }?.input, 100)
+        XCTAssertEqual(models.first { $0.model == "unknown" }?.input, 500)
+        XCTAssertEqual(try store.aiSessionStats(dayEpoch: sampleDayEpoch).count, 1)
     }
 
     func testDedupSurvivesRestartReingestingFromZero() throws {
