@@ -10,8 +10,11 @@ import ByteLifeCore
 /// deltas, and everything settles to a quiet dark baseline when nothing flows.
 struct MeterBridgeView: View {
     @ObservedObject var viewModel: DashboardViewModel
+    @Environment(\.colorScheme) private var scheme
 
     private var bridge: MeterBridge { viewModel.meterBridge }
+    /// The glow-softening factor for the current scheme, applied to every shadow opacity.
+    private var glow: Double { LatticePalette.glow(scheme) }
     private func channel(_ kind: MeterChannelKind) -> MeterChannel? {
         bridge.channels.first { $0.kind == kind }
     }
@@ -40,7 +43,7 @@ struct MeterBridgeView: View {
             HStack {
                 Text("BYTELIFE // FLOW")
                     .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                    .foregroundStyle(LatticePalette.dim)
+                    .foregroundStyle(LatticePalette.dim(scheme))
                 Spacer()
                 liveChip
             }
@@ -50,8 +53,8 @@ struct MeterBridgeView: View {
                 .font(.system(size: 26, design: .monospaced).weight(.semibold))
                 .monospacedDigit()
                 .contentTransition(.numericText(countsDown: false))
-                .foregroundStyle(LatticePalette.dial)
-                .shadow(color: LatticePalette.amber.opacity(0.35), radius: 6)
+                .foregroundStyle(LatticePalette.dial(scheme))
+                .shadow(color: LatticePalette.amber(scheme).opacity(0.35 * glow), radius: 6)
 
             combinedFlowLine
             hexTicker
@@ -59,16 +62,18 @@ struct MeterBridgeView: View {
     }
 
     private var liveChip: some View {
+        // The chip keeps an amber fill when live in both schemes; its text is the dark chassis ink,
+        // which reads legibly on amber in either appearance.
         Text("LIVE")
             .font(.system(size: 9, design: .monospaced).weight(.bold))
-            .foregroundStyle(bridge.anyLive ? LatticePalette.chassis : LatticePalette.dim)
+            .foregroundStyle(bridge.anyLive ? LatticePalette.chassis(.dark) : LatticePalette.dim(scheme))
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background(
                 RoundedRectangle(cornerRadius: 3)
-                    .fill(bridge.anyLive ? LatticePalette.amber : LatticePalette.card)
+                    .fill(bridge.anyLive ? LatticePalette.amber(scheme) : LatticePalette.card(scheme))
             )
-            .shadow(color: bridge.anyLive ? LatticePalette.amber.opacity(0.5) : .clear, radius: 4)
+            .shadow(color: bridge.anyLive ? LatticePalette.amber(scheme).opacity(0.5 * glow) : .clear, radius: 4)
     }
 
     private var combinedFlowLine: some View {
@@ -77,8 +82,8 @@ struct MeterBridgeView: View {
             .font(.system(.caption, design: .monospaced).weight(.medium))
             .monospacedDigit()
             .contentTransition(.numericText(countsDown: false))
-            .foregroundStyle(byteChannelsLive ? LatticePalette.teal : LatticePalette.dim)
-            .shadow(color: byteChannelsLive ? LatticePalette.teal.opacity(0.4) : .clear, radius: 3)
+            .foregroundStyle(byteChannelsLive ? LatticePalette.teal(scheme) : LatticePalette.dim(scheme))
+            .shadow(color: byteChannelsLive ? LatticePalette.teal(scheme).opacity(0.4 * glow) : .clear, radius: 3)
     }
 
     /// Real inter-poll byte deltas in hexadecimal, newest first. Pure byte texture, zero fakery.
@@ -87,7 +92,7 @@ struct MeterBridgeView: View {
              ? "Δ —"
              : "Δ " + viewModel.tickerDeltas.map(ByteFormatting.hex).joined(separator: " · "))
             .font(.system(size: 9, design: .monospaced))
-            .foregroundStyle(LatticePalette.teal.opacity(0.4))
+            .foregroundStyle(LatticePalette.teal(scheme).opacity(0.4))
             .lineLimit(1)
             .truncationMode(.tail)
     }
@@ -131,8 +136,8 @@ struct MeterBridgeView: View {
             .foregroundStyle(by: .value("Series", point.series))
         }
         .chartForegroundStyleScale([
-            "traffic": LatticePalette.teal,
-            "storage": LatticePalette.violet,
+            "traffic": LatticePalette.teal(scheme),
+            "storage": LatticePalette.violet(scheme),
         ])
         .chartLegend(.hidden)
         .chartXAxis(.hidden)
@@ -146,20 +151,20 @@ struct MeterBridgeView: View {
     // MARK: - Channel cards
 
     private func rateCard(_ channel: MeterChannel) -> some View {
-        let color = LatticePalette.channel(channel.kind)
+        let color = LatticePalette.channel(channel.kind, scheme)
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text(channel.title)
                     .font(.system(.caption2, design: .monospaced).weight(.semibold))
                     .foregroundStyle(color.opacity(0.85))
-                if channel.isLive { PulseDot(color: color) }
+                if channel.isLive { PulseDot(color: color, glow: glow) }
                 Spacer()
                 Text(channel.rateReadout)
                     .font(.system(.caption, design: .monospaced).weight(.semibold))
                     .monospacedDigit()
                     .contentTransition(.numericText(countsDown: false))
-                    .foregroundStyle(channel.isLive ? color : LatticePalette.dim)
-                    .shadow(color: channel.isLive ? color.opacity(0.45) : .clear, radius: 3)
+                    .foregroundStyle(channel.isLive ? color : LatticePalette.dim(scheme))
+                    .shadow(color: channel.isLive ? color.opacity(0.45 * glow) : .clear, radius: 3)
             }
 
             sparkline(channel, color: color)
@@ -179,7 +184,7 @@ struct MeterBridgeView: View {
                 }
             }
             .font(.system(size: 9, design: .monospaced))
-            .foregroundStyle(LatticePalette.dim)
+            .foregroundStyle(LatticePalette.dim(scheme))
 
             if let tag = channel.uncalibratedTag {
                 uncalibratedRow(tag: tag, needsPermission: channel.needsPermission, color: color)
@@ -212,7 +217,7 @@ struct MeterBridgeView: View {
             if hasSignal, let peakIndex {
                 PointMark(x: .value("Minute", peakIndex), y: .value("Level", bars[peakIndex]))
                     .symbolSize(18)
-                    .foregroundStyle(LatticePalette.dial)
+                    .foregroundStyle(LatticePalette.dial(scheme))
             }
         }
         .chartXAxis(.hidden)
@@ -266,16 +271,16 @@ struct MeterBridgeView: View {
     /// Attention is the one absolute-scale channel, so it earns the one radial element: a ring showing
     /// the fraction of the day spent attentive, with the accumulated duration beside it.
     private func exposureCard(_ channel: MeterChannel) -> some View {
-        let color = LatticePalette.channel(.exposure)
+        let color = LatticePalette.channel(.exposure, scheme)
         return HStack(spacing: 10) {
             ZStack {
                 Circle()
-                    .stroke(LatticePalette.hairline, lineWidth: 4)
+                    .stroke(LatticePalette.hairline(scheme), lineWidth: 4)
                 Circle()
                     .trim(from: 0, to: max(0.003, channel.exposureFraction))
                     .stroke(color, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .shadow(color: color.opacity(0.4), radius: 2)
+                    .shadow(color: color.opacity(0.4 * glow), radius: 2)
             }
             .frame(width: 34, height: 34)
 
@@ -290,11 +295,11 @@ struct MeterBridgeView: View {
                         .monospacedDigit()
                         .contentTransition(.numericText(countsDown: false))
                         .foregroundStyle(color)
-                        .shadow(color: color.opacity(0.45), radius: 3)
+                        .shadow(color: color.opacity(0.45 * glow), radius: 3)
                 }
                 Text(channel.subline)
                     .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(LatticePalette.dim)
+                    .foregroundStyle(LatticePalette.dim(scheme))
                 if let tag = channel.uncalibratedTag {
                     Text(tag)
                         .font(.system(size: 9, design: .monospaced).weight(.medium))
@@ -312,8 +317,8 @@ struct MeterBridgeView: View {
 
     private var cardShape: some View {
         RoundedRectangle(cornerRadius: 8)
-            .fill(LatticePalette.card)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(LatticePalette.hairline, lineWidth: 1))
+            .fill(LatticePalette.card(scheme))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(LatticePalette.hairline(scheme), lineWidth: 1))
     }
 }
 
@@ -321,6 +326,8 @@ struct MeterBridgeView: View {
 /// inserted only when the channel reads live, so removal ends the animation and a quiet panel is still.
 private struct PulseDot: View {
     let color: Color
+    /// The scheme glow factor, so the breathing dot's halo softens on light like every other glow.
+    var glow: Double = 1.0
     @State private var bright = false
 
     var body: some View {
@@ -328,7 +335,7 @@ private struct PulseDot: View {
             .fill(color)
             .frame(width: 5, height: 5)
             .opacity(bright ? 1.0 : 0.35)
-            .shadow(color: color.opacity(0.6), radius: 3)
+            .shadow(color: color.opacity(0.6 * glow), radius: 3)
             .onAppear {
                 withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
                     bright = true

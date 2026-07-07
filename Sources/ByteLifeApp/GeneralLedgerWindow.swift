@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 import ByteLifeCore
 
 /// Identifier for the General Ledger scene, shared by the `Window` declaration and the footer button
@@ -18,6 +19,8 @@ final class GeneralLedgerViewModel: ObservableObject {
     @Published private(set) var periods: [LedgerPeriod] = []
     /// The all-history trial balance rows for the right rail.
     @Published private(set) var trialBalance: [TrialBalanceRow] = []
+    /// Per-day posted byte volume, oldest-first, drawn as the history bar chart above the periods list.
+    @Published private(set) var history: [HistoryPoint] = []
     /// The day whose detail the center-right pane shows.
     @Published private(set) var selectedDay: Int64?
     /// The stored receipt for the selected day, or nil when the day is still open.
@@ -55,6 +58,8 @@ final class GeneralLedgerViewModel: ObservableObject {
         let stamps = (try? coordinator.store.reconciledStamps()) ?? [:]
         periods = LedgerPeriod.list(daysWithData: days, stampsByDay: stamps)
         trialBalance = TrialBalance.rows(totals: (try? coordinator.store.trialBalance()) ?? [:])
+        let totalsByDay = (try? coordinator.store.totals(forDayEpochs: days)) ?? [:]
+        history = HistorySeries.postedVolume(daysWithData: days, totalsByDay: totalsByDay)
 
         if selectedDay == nil || !periods.contains(where: { $0.dayEpoch == selectedDay }) {
             selectedDay = periods.first?.dayEpoch
@@ -102,8 +107,22 @@ struct GeneralLedgerView: View {
     @StateObject private var vm = GeneralLedgerViewModel(coordinator: .shared)
     @Environment(\.colorScheme) private var scheme
 
-    private var ink: Color { LedgerPalette.primaryInk(scheme) }
-    private func hairline() -> some View { Rectangle().fill(LedgerPalette.pencil).frame(width: 1) }
+    /// Primary dial text and the secondary dim role, resolved against the current appearance.
+    private var dial: Color { LatticePalette.dial(scheme) }
+    private var dim: Color { LatticePalette.dim(scheme) }
+    /// A vertical rail divider hairline, the modern chassis's rule between columns.
+    private func hairline() -> some View { LatticePalette.hairline(scheme).frame(width: 1) }
+    /// The card surface every rail's content sits on: filled card with a hairline stroke and radius 8.
+    private var cardShape: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(LatticePalette.card(scheme))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(LatticePalette.hairline(scheme), lineWidth: 1))
+    }
+
+    /// The period currently under review, used to badge the day-detail header with its stamp chip.
+    private var selectedPeriod: LedgerPeriod? {
+        vm.periods.first { $0.dayEpoch == vm.selectedDay }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -120,8 +139,8 @@ struct GeneralLedgerView: View {
                 .frame(width: 268)
         }
         .frame(minWidth: 940, minHeight: 520)
-        .background(LedgerPalette.surface(scheme))
-        .foregroundStyle(ink)
+        .background(LatticePalette.chassis(scheme))
+        .foregroundStyle(dial)
         .onAppear { vm.reload() }
     }
 
@@ -130,21 +149,26 @@ struct GeneralLedgerView: View {
     private var accountsRail: some View {
         VStack(alignment: .leading, spacing: 0) {
             railHeader("ACCOUNTS")
-            ForEach(LedgerAccountKind.allCases, id: \.rawValue) { kind in
-                Button {
-                    vm.highlightedAccount = kind
-                } label: {
-                    Text(kind.title)
-                        .font(.system(.callout, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(vm.highlightedAccount == kind ? LedgerPalette.pencil.opacity(0.28) : .clear)
-                        .contentShape(Rectangle())
+            VStack(spacing: 0) {
+                ForEach(LedgerAccountKind.allCases, id: \.rawValue) { kind in
+                    Button {
+                        vm.highlightedAccount = kind
+                    } label: {
+                        Text(kind.title)
+                            .font(.system(.callout, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(vm.highlightedAccount == kind ? LatticePalette.teal(scheme).opacity(0.14) : .clear)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
-            Spacer()
+            .padding(.vertical, 4)
+            .background(cardShape)
+            .padding(10)
+            Spacer(minLength: 0)
         }
     }
 
@@ -153,22 +177,50 @@ struct GeneralLedgerView: View {
     private var periodsColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
             railHeader("PERIODS")
+            if !vm.history.isEmpty {
+                historyChart
+                    .padding(8)
+                    .background(cardShape)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 10)
+            }
             if vm.periods.isEmpty {
                 Text("No periods on file yet.")
                     .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(LedgerPalette.pencil)
+                    .foregroundStyle(dim)
                     .padding(14)
             }
             ScrollView(.vertical) {
                 VStack(spacing: 0) {
                     ForEach(vm.periods) { period in
                         periodRow(period)
-                        Rectangle().fill(LedgerPalette.pencil.opacity(0.5)).frame(height: 1)
+                        LatticePalette.hairline(scheme).frame(height: 1)
                     }
                 }
+                .padding(.vertical, 2)
             }
+            .background(cardShape)
+            .padding(10)
             Spacer(minLength: 0)
         }
+    }
+
+    /// The compact history bar chart: posted byte volume per recorded day, oldest-left so newest sits on
+    /// the right, in scheme-resolved teal on a card. A shape of the past, not a control: no interaction.
+    private var historyChart: some View {
+        Chart {
+            ForEach(Array(vm.history.enumerated()), id: \.element.id) { index, point in
+                BarMark(
+                    x: .value("Day", index),
+                    y: .value("Volume", point.volume)
+                )
+                .foregroundStyle(LatticePalette.teal(scheme))
+                .cornerRadius(2)
+            }
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .frame(height: 48)
     }
 
     private func periodRow(_ period: LedgerPeriod) -> some View {
@@ -182,37 +234,46 @@ struct GeneralLedgerView: View {
                         .monospacedDigit()
                     Text(period.weekday)
                         .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(ink.opacity(0.6))
+                        .foregroundStyle(dim)
                 }
                 Spacer()
-                stampBadge(period.state)
+                stampChip(period.state)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(vm.selectedDay == period.dayEpoch ? LedgerPalette.pencil.opacity(0.28) : .clear)
+            .background(vm.selectedDay == period.dayEpoch ? LatticePalette.teal(scheme).opacity(0.14) : .clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
+    /// The stamp state as a small chip. The stamp color rule is unchanged from the receipt: brass only
+    /// for BALANCED, oxblood only for FLAGGED, and dial ink for an arrears posting; an open day reads dim.
     @ViewBuilder
-    private func stampBadge(_ state: PeriodState) -> some View {
+    private func stampChip(_ state: PeriodState) -> some View {
         switch state {
         case .posted(let stamp):
-            // Brass gold marks the balanced close and nothing else; a flagged day reads in oxblood
-            // and an arrears posting in plain ink. The long arrears stamp shortens to fit the column.
-            Text(stamp == "POSTED IN ARREARS" ? "ARREARS" : stamp)
-                .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                .foregroundStyle(
-                    stamp == "BALANCED" ? LedgerPalette.brass
-                        : stamp == "FLAGGED" ? LedgerPalette.debit : ink
-                )
+            let color: Color = stamp == "BALANCED" ? LedgerPalette.brass
+                : stamp == "FLAGGED" ? LedgerPalette.debit : dial
+            chip(stamp == "POSTED IN ARREARS" ? "ARREARS" : stamp, color: color)
         case .unposted:
-            Text("OPEN")
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(LedgerPalette.pencil)
+            chip("OPEN", color: dim)
         }
+    }
+
+    /// A small rounded badge in `color`: a colored label over a faint tint of the same color.
+    private func chip(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(.caption2, design: .monospaced).weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(color.opacity(0.16))
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(color.opacity(0.35), lineWidth: 1))
+            )
     }
 
     // MARK: - Day detail
@@ -220,8 +281,15 @@ struct GeneralLedgerView: View {
     @ViewBuilder
     private var detailPane: some View {
         VStack(alignment: .leading, spacing: 0) {
-            railHeader("DAY DETAIL")
+            railHeader("DAY DETAIL", trailing: selectedPeriod.map { AnyView(stampChip($0.state)) })
             if let receipt = vm.selectedReceipt {
+                HStack {
+                    Spacer()
+                    ReceiptToolbar(reconciliation: receipt)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                LatticePalette.hairline(scheme).frame(height: 1)
                 ScrollView(.vertical) {
                     ReceiptStripView(reconciliation: receipt, fontSize: 12)
                         .frame(maxWidth: .infinity)
@@ -232,7 +300,7 @@ struct GeneralLedgerView: View {
             } else {
                 Text("Select a period to review.")
                     .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(LedgerPalette.pencil)
+                    .foregroundStyle(dim)
                     .padding(18)
                 Spacer()
             }
@@ -255,7 +323,7 @@ struct GeneralLedgerView: View {
                             GridRow {
                                 Text(line.label)
                                     .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(ink.opacity(0.85))
+                                    .foregroundStyle(dial.opacity(0.85))
                                 Text(line.side == .debit ? line.value : "")
                                     .font(.system(.caption2, design: .monospaced))
                                     .monospacedDigit()
@@ -264,23 +332,25 @@ struct GeneralLedgerView: View {
                                 Text(line.side == .debit ? "" : line.value)
                                     .font(.system(.caption2, design: .monospaced))
                                     .monospacedDigit()
-                                    .foregroundStyle(line.side == .credit ? LedgerPalette.credit : ink.opacity(0.55))
+                                    .foregroundStyle(line.side == .credit ? LedgerPalette.credit : dim)
                                     .gridColumnAlignment(.trailing)
                             }
                         }
                         GridRow {
-                            Rectangle().fill(LedgerPalette.pencil).frame(height: 1).gridCellColumns(3)
+                            LatticePalette.hairline(scheme).frame(height: 1).gridCellColumns(3)
                         }
                     }
                 }
                 .padding(16)
             }
+            .background(cardShape)
+            .padding(10)
 
-            Rectangle().fill(LedgerPalette.pencil).frame(height: 1)
+            LatticePalette.hairline(scheme).frame(height: 1)
             HStack {
                 Text(day == vm.todayEpoch ? "Period still open." : "Past period, unposted.")
                     .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(LedgerPalette.pencil)
+                    .foregroundStyle(dim)
                 Spacer()
                 Button {
                     vm.closeBooks(day: day)
@@ -299,25 +369,31 @@ struct GeneralLedgerView: View {
     private var trialBalanceRail: some View {
         VStack(alignment: .leading, spacing: 0) {
             railHeader("TRIAL BALANCE")
-            HStack {
-                Text("ACCOUNT")
-                Spacer()
-                Text("DEBIT").frame(width: 74, alignment: .trailing)
-                Text("CREDIT").frame(width: 74, alignment: .trailing)
-            }
-            .font(.system(.caption2, design: .monospaced).weight(.semibold))
-            .foregroundStyle(ink.opacity(0.6))
-            .padding(.horizontal, 14)
-            .padding(.bottom, 4)
-            Rectangle().fill(LedgerPalette.pencil).frame(height: 1)
+            VStack(spacing: 0) {
+                HStack {
+                    Text("ACCOUNT")
+                    Spacer()
+                    Text("DEBIT").frame(width: 74, alignment: .trailing)
+                    Text("CREDIT").frame(width: 74, alignment: .trailing)
+                }
+                .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                .foregroundStyle(dim)
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+                LatticePalette.hairline(scheme).frame(height: 1)
 
-            ScrollView(.vertical) {
-                VStack(spacing: 0) {
-                    ForEach(vm.trialBalance) { row in
-                        trialRow(row)
+                ScrollView(.vertical) {
+                    VStack(spacing: 0) {
+                        ForEach(vm.trialBalance) { row in
+                            trialRow(row)
+                        }
                     }
+                    .padding(.vertical, 2)
                 }
             }
+            .background(cardShape)
+            .padding(10)
             Spacer(minLength: 0)
         }
     }
@@ -326,7 +402,7 @@ struct GeneralLedgerView: View {
         HStack(alignment: .firstTextBaseline) {
             Text(row.label)
                 .font(.system(.caption2, design: .monospaced).weight(row.isSubline ? .regular : .medium))
-                .foregroundStyle(row.isSubline ? ink.opacity(0.7) : ink)
+                .foregroundStyle(row.isSubline ? dim : dial)
                 .padding(.leading, row.isSubline ? 12 : 0)
             Spacer()
             Text(row.debit)
@@ -337,24 +413,28 @@ struct GeneralLedgerView: View {
             Text(row.credit.isEmpty ? "—" : row.credit)
                 .font(.system(.caption2, design: .monospaced))
                 .monospacedDigit()
-                .foregroundStyle(row.credit.isEmpty ? ink.opacity(0.4) : LedgerPalette.credit)
+                .foregroundStyle(row.credit.isEmpty ? dim : LedgerPalette.credit)
                 .frame(width: 74, alignment: .trailing)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 12)
         .padding(.vertical, 5)
     }
 
     // MARK: - Shared
 
-    private func railHeader(_ title: String) -> some View {
+    private func railHeader(_ title: String, trailing: AnyView? = nil) -> some View {
         VStack(spacing: 0) {
-            Text(title)
-                .font(.system(.subheadline, design: .monospaced).weight(.semibold))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14)
-                .padding(.top, 14)
-                .padding(.bottom, 8)
-            Rectangle().fill(LedgerPalette.pencil).frame(height: 1)
+            HStack {
+                Text(title)
+                    .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                Spacer()
+                if let trailing { trailing }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
+            .padding(.bottom, 8)
+            LatticePalette.hairline(scheme).frame(height: 1)
         }
     }
 }

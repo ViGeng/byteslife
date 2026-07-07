@@ -32,11 +32,12 @@ struct ByteLifeApplication: App {
 struct MenuBarView: View {
     @ObservedObject var viewModel: DashboardViewModel
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.colorScheme) private var scheme
     /// When true, the panel shows the stored receipt strip in place of the meter. Set on posting and by
     /// the posted-state "View receipt" control; cleared by the strip's Done button.
     @State private var showingReceipt = false
 
-    private var ink: Color { LatticePalette.dial }
+    private var ink: Color { LatticePalette.dial(scheme) }
 
     var body: some View {
         Group {
@@ -47,7 +48,7 @@ struct MenuBarView: View {
             }
         }
         .frame(width: 360, alignment: .leading)
-        .background(LatticePalette.chassis)
+        .background(LatticePalette.chassis(scheme))
         .foregroundStyle(ink)
         // The panel polls fast and animates while open, slow and label-only while closed.
         .onAppear { viewModel.panelDidAppear() }
@@ -58,7 +59,7 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 0) {
             MeterBridgeView(viewModel: viewModel)
             reconcileBar
-            Rectangle().fill(LatticePalette.hairline).frame(height: 1)
+            Rectangle().fill(LatticePalette.hairline(scheme)).frame(height: 1)
             footer
         }
     }
@@ -69,17 +70,18 @@ struct MenuBarView: View {
     /// sheet. Motion stays minimal and mechanical: the strip simply appears, no flourish.
     private func receiptPanel(_ receipt: Reconciliation) -> some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 12) {
                 Text("RECEIPT")
                     .font(.system(.subheadline, design: .monospaced).weight(.semibold))
-                    .foregroundStyle(LatticePalette.dial)
+                    .foregroundStyle(LatticePalette.dial(scheme))
                 Spacer()
+                ReceiptToolbar(reconciliation: receipt)
                 Button("Done") { withAnimation(.easeOut(duration: 0.15)) { showingReceipt = false } }
                     .font(.system(.caption, design: .monospaced))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            Rectangle().fill(LatticePalette.hairline).frame(height: 1)
+            Rectangle().fill(LatticePalette.hairline(scheme)).frame(height: 1)
 
             ScrollView(.vertical) {
                 ReceiptStripView(reconciliation: receipt)

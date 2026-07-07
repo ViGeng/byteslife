@@ -1,11 +1,13 @@
 import SwiftUI
 import ByteLifeCore
 
-/// The nightly receipt as a tall, narrow thermal-printer strip. It renders the *stored* receipt text
-/// verbatim in a fixed-width monospaced face so the itemized columns line up to the character, keeps a
-/// subtle perforated edge top and bottom, and colours the stamp line alone: brass gold for BALANCED
-/// (the one place gold appears), oxblood for FLAGGED. The artifact is immutable, so the view only reads
-/// and colours the text it was given; it never recomposes a figure.
+/// The nightly receipt as a real thermal-printer strip. It renders the *stored* receipt text verbatim in
+/// a fixed-width monospaced face so the itemized columns line up to the character, and it is a receipt:
+/// the paper stays paper-colored in both appearances, sitting slightly lifted off the chassis on a soft
+/// drop shadow. The chrome is a genuine tear — triangular teeth cut into the top and bottom edges — and
+/// the footer prints a barcode drawn deterministically from the content hash with the hash beneath it.
+/// The artifact is immutable, so the view only reads and colours the text it was given; the stamp line
+/// alone takes colour (brass gold for BALANCED, oxblood for FLAGGED), and no figure is ever recomposed.
 struct ReceiptStripView: View {
     let reconciliation: Reconciliation
     /// Point size of the monospaced tape. The panel uses the compact default; the window enlarges it.
@@ -13,17 +15,44 @@ struct ReceiptStripView: View {
 
     @Environment(\.colorScheme) private var scheme
 
-    private var ink: Color { LedgerPalette.primaryInk(scheme) }
+    /// Receipt ink is always dark on cream paper, regardless of the system appearance, because a receipt
+    /// is paper. The stamp line overrides this with brass or oxblood.
+    private let ink = LedgerPalette.ink
     private var lines: [String] { reconciliation.receiptText.components(separatedBy: "\n") }
+
+    /// Tooth geometry for the torn top and bottom edges. Content is inset by `toothHeight` so no text or
+    /// bar ever collides with a tooth.
+    private let toothWidth: CGFloat = 9
+    private let toothHeight: CGFloat = 5
 
     var body: some View {
         VStack(spacing: 0) {
-            perforation
             tape
-            perforation
+            barcodeFooter
         }
+        .padding(.horizontal, 16)
+        .padding(.top, toothHeight + 12)
+        .padding(.bottom, toothHeight + 12)
         .fixedSize(horizontal: true, vertical: false)
-        .background(LedgerPalette.surface(scheme))
+        .background(paper)
+    }
+
+    // MARK: - Paper
+
+    /// The torn cream paper silhouette, filled paper-colored in both appearances and lifted off the
+    /// chassis by a soft shadow (deeper on the dark deck, gentle on light).
+    private var paper: some View {
+        TornPaper(toothWidth: toothWidth, toothHeight: toothHeight)
+            .fill(LedgerPalette.paper)
+            .overlay {
+                // On light appearance the cream paper sits on near-white surfaces, so a faint warm
+                // edge keeps the tear legible even where the lift shadow renders weakly.
+                if scheme == .light {
+                    TornPaper(toothWidth: toothWidth, toothHeight: toothHeight)
+                        .stroke(LedgerPalette.ink.opacity(0.12), lineWidth: 0.5)
+                }
+            }
+            .shadow(color: .black.opacity(scheme == .dark ? 0.55 : 0.20), radius: 7, x: 0, y: 3)
     }
 
     // MARK: - Tape
@@ -38,8 +67,6 @@ struct ReceiptStripView: View {
                     .foregroundStyle(colour(for: line))
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
     }
 
     /// The stamp line is the only place brass gold is allowed, so resolution always reads as gold.
@@ -54,29 +81,90 @@ struct ReceiptStripView: View {
         line.contains("* BALANCED *") || line.contains("* FLAGGED *") || line.contains("* POSTED IN ARREARS *")
     }
 
-    // MARK: - Perforation
+    // MARK: - Barcode footer
 
-    /// A faint dashed tear line standing in for the tape's perforated edge. Deliberately understated:
-    /// a thin, low-contrast pencil-gray rule, never a photographic printer bezel. It spans whatever
-    /// width the tape settles at without forcing the strip any wider.
-    private var perforation: some View {
-        PerforationRule()
-            .stroke(style: StrokeStyle(lineWidth: 1, dash: [2, 4]))
-            .foregroundStyle(LedgerPalette.pencil.opacity(0.6))
-            .frame(height: 1)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
+    /// The footer barcode, drawn deterministically from the receipt's content hash, with the hash printed
+    /// beneath it in small monospaced type. Both come straight off the stored artifact, so a shared or
+    /// exported receipt stays tamper-evident: the same hash always draws the same bars.
+    private var barcodeFooter: some View {
+        VStack(spacing: 5) {
+            BarcodeView(modules: ReceiptBarcode.modules(for: reconciliation.contentHash), ink: ink)
+                .frame(maxWidth: .infinity)
+            Text(reconciliation.contentHash)
+                .font(.system(size: fontSize - 2, design: .monospaced))
+                .monospacedDigit()
+                .foregroundStyle(ink.opacity(0.85))
+        }
+        .padding(.top, 10)
     }
 }
 
-/// A single horizontal line drawn across the middle of its rect, dashed by the caller's stroke style
-/// into the receipt's subtle perforation edge.
-private struct PerforationRule: Shape {
+/// Draws a barcode from `ReceiptBarcode` module widths: bars (even index) inked, spaces (odd index) left
+/// as paper. A fixed module unit keeps the whole barcode narrower than the tape so it never widens the
+/// strip.
+private struct BarcodeView: View {
+    let modules: [Int]
+    let ink: Color
+    var unit: CGFloat = 2
+    var height: CGFloat = 30
+
+    private var totalWidth: CGFloat { CGFloat(modules.reduce(0, +)) * unit }
+
+    var body: some View {
+        Canvas { context, size in
+            var x: CGFloat = 0
+            for (index, width) in modules.enumerated() {
+                let w = CGFloat(width) * unit
+                if index.isMultiple(of: 2) {
+                    context.fill(Path(CGRect(x: x, y: 0, width: w, height: size.height)), with: .color(ink))
+                }
+                x += w
+            }
+        }
+        .frame(width: totalWidth, height: height)
+    }
+}
+
+/// The receipt paper silhouette: a rectangle whose top and bottom edges are cut into triangular teeth, a
+/// real tear rather than a dashed rule. The teeth are a uniform sawtooth of period `toothWidth` and depth
+/// `toothHeight`; the caller insets its content by `toothHeight` so nothing lands on a tooth.
+private struct TornPaper: Shape {
+    var toothWidth: CGFloat = 9
+    var toothHeight: CGFloat = 5
+
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        path.move(to: CGPoint(x: 0, y: rect.midY))
-        path.addLine(to: CGPoint(x: rect.width, y: rect.midY))
+        let w = rect.width
+        let h = rect.height
+        let th = toothHeight
+        let step = toothWidth / 2
+
+        // Top edge, left -> right, sawtooth between the peak (y = 0) and the valley (y = th).
+        path.move(to: CGPoint(x: 0, y: th))
+        var x: CGFloat = 0
+        var peak = true
+        while x < w {
+            let nextX = min(x + step, w)
+            path.addLine(to: CGPoint(x: nextX, y: peak ? 0 : th))
+            x = nextX
+            peak.toggle()
+        }
+        path.addLine(to: CGPoint(x: w, y: th))
+
+        // Right edge down to the bottom tooth line.
+        path.addLine(to: CGPoint(x: w, y: h - th))
+
+        // Bottom edge, right -> left, sawtooth between the peak (y = h) and the valley (y = h - th).
+        x = w
+        peak = true
+        while x > 0 {
+            let nextX = max(x - step, 0)
+            path.addLine(to: CGPoint(x: nextX, y: peak ? h : h - th))
+            x = nextX
+            peak.toggle()
+        }
+        path.addLine(to: CGPoint(x: 0, y: h - th))
+        path.closeSubpath()
         return path
     }
 }

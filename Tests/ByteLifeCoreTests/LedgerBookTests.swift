@@ -46,6 +46,39 @@ final class LedgerBookTests: XCTestCase {
         XCTAssertEqual(periods[0].state, .posted(stamp: "BALANCED"))
     }
 
+    // MARK: - History series
+
+    func testPostedVolumeSeriesIsOldestFirstWithCorrectVolumePerDay() {
+        // Posted volume is every Traffic and Storage debit and credit summed; tokens, hours, and labor
+        // never fold in.
+        let totalsByDay: [Int64: [MetricKind: Int64]] = [
+            jan1: [.networkBytesOut: 100, .networkBytesIn: 200, .diskBytesWritten: 300, .diskBytesRead: 400,
+                   .aiInputTokens: 9_999, .screenAttentiveSeconds: 7_200],
+            jan2: [.networkBytesOut: 1, .diskBytesRead: 1],
+            jan3: [.networkBytesIn: 50],
+        ]
+        let series = HistorySeries.postedVolume(
+            daysWithData: [jan3, jan1, jan2], // newest-first input, as the store returns it
+            totalsByDay: totalsByDay
+        )
+
+        XCTAssertEqual(series.map(\.dayEpoch), [jan1, jan2, jan3]) // oldest-first
+        XCTAssertEqual(series[0].volume, 1_000) // 100 + 200 + 300 + 400, tokens/hours excluded
+        XCTAssertEqual(series[1].volume, 2)
+        XCTAssertEqual(series[2].volume, 50)
+    }
+
+    func testPostedVolumeSeriesTreatsMissingTotalsAsZero() {
+        let series = HistorySeries.postedVolume(daysWithData: [jan1, jan2], totalsByDay: [jan1: [.networkBytesOut: 8]])
+        XCTAssertEqual(series.map(\.dayEpoch), [jan1, jan2])
+        XCTAssertEqual(series[0].volume, 8)
+        XCTAssertEqual(series[1].volume, 0)
+    }
+
+    func testPostedVolumeSeriesOfEmptyStoreIsEmpty() {
+        XCTAssertTrue(HistorySeries.postedVolume(daysWithData: [], totalsByDay: [:]).isEmpty)
+    }
+
     // MARK: - Trial balance
 
     func testTrialBalanceRowsFormatPerAccountUnit() {

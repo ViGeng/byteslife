@@ -136,6 +136,24 @@ The panel is a chart-led live dashboard on a byte-native dark chassis. The gover
 - Motion rules, exhaustive: numeric rolls on readouts, the per-channel live dot's breath gated on liveness, nothing else animates.
 - The footer keeps Reconcile, the POSTED stamp logic and colors, View receipt, launch-at-login, the General Ledger button, and Quit on the dark chassis. No spanning or long content may drive the panel wider than its frame; long tags wrap or truncate.
 
+---
+
+# Iteration 5: adaptive appearance, the modern ledger window, and the shareable receipt
+
+Status: executed 2026-07-07 (see CHANGELOG.md, iteration 5). Approved the same day from founder feedback on 0.3.0: the deck looks good but must adapt to light and dark appearance; the General Ledger window should match the panel's modern style instead of the paper-ledger look; the receipt stays (it is fun) but should look like a real thermal receipt and export as a PDF or image for social sharing. Post-execution notes: the review pass confirmed zero findings; of its minors, the light-mode receipt gained a faint edge stroke and a failed save now surfaces an alert instead of silently discarding the write. The multi-device and agentless-SSH design in docs/design/multi-device.md remains the next structural layer.
+
+## Decisions
+
+- Appearance-adaptive deck. LatticePalette becomes scheme-aware: every role (chassis, card, hairline, dial, dim, five channel signal colors) resolves against the current color scheme. Dark keeps the shipped values exactly. Light variants, pinned: chassis #F2F5F7, card #FFFFFF, hairline #DDE4EA, dial #1A2129 (dim 55%), TRAFFIC teal #0E9C86, STORAGE violet #6B5AE0, COGNITION amber #B87E0A, EXPOSURE green #3D9C4C, MECHANICS coral #E0503E. Glow shadows soften on light (about half the dark opacity) so they read as warmth, not blur. The LIVE chip keeps an amber fill in both schemes with legible text. The panel and the General Ledger window both track the system appearance; nothing is hard-coded dark anymore.
+- The General Ledger window adopts the deck's modern language on the adaptive chassis: card surfaces with hairline strokes, monospaced tabular figures, channel/stamp colors as chips. Layout stays three-plus-one rails (accounts, periods, day detail, trial balance) but restyled, and the periods column gains a small history bar chart at its top: posted byte volume per recorded day (Swift Charts, teal bars, newest right), so the window opens on a shape of the past, not just a list. The per-day posted-volume series computes in ByteLifeCore (from the existing multi-day totals query) and is tested.
+- The receipt becomes a real thermal artifact. The stored receipt_text remains the immutable audit source rendered verbatim; the chrome around it changes: torn zigzag edges top and bottom (a real tear, not a dashed rule), receipt paper stays paper-colored in BOTH appearances (a receipt is paper; it should look slightly lifted with a soft shadow on the dark deck and on light), and the footer gains a barcode drawn deterministically from the 16-hex content hash (each hex digit maps to a fixed bar-width pattern; the hash prints beneath it). The barcode derivation lives in ByteLifeCore and is tested; the same receipt always draws the same barcode.
+- Receipt export and sharing. The receipt view renders to a shareable artifact via ImageRenderer at 2x: a Share button opens the system share sheet with the PNG (the social-media path), and Save… writes PNG or PDF through a save panel (PDF drawn vector-side via a CGContext PDF pass, not a rasterized page). Both receipt surfaces (the panel strip and the General Ledger day detail) get the same compact toolbar. Exported artifacts contain exactly the stored receipt including the hash and barcode, so a shared receipt stays tamper-evident.
+- Version bumps to 0.4.0.
+
+## Verification
+
+`swift build` and `swift test` green with the new core logic (per-day posted-volume series, barcode pattern derivation) tested; the packaged app renders the deck and the window correctly in both appearances (flip System Settings appearance to check), and a receipt exports to PNG and PDF files that open cleanly.
+
 ## Verification
 
 `swift build` and `swift test` green with the new core (rate math, normalization, peak-hold, minute-window query across midnight) under test; the packaged app relaunches and renders the Meter Bridge with live rates while the Ledger surfaces behave unchanged.
