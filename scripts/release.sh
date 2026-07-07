@@ -32,9 +32,11 @@ echo "==> Creating release $TAG on $TAP_REPO"
 gh release create "$TAG" "$ZIP" \
     --repo "$TAP_REPO" \
     --title "ByteLife $VERSION" \
-    --notes "ByteLife $VERSION — menu bar dashboard tracking your digital life in bytes. Ad-hoc signed build; the cask clears quarantine on install.
+    --notes "ByteLife $VERSION — menu bar dashboard tracking your digital life in bytes.
 
-Install: \`brew tap vigeng/tap && brew install --cask bytelife\` (if your Homebrew sets HOMEBREW_REQUIRE_TAP_TRUST, run \`brew trust vigeng/tap\` once after tapping)."
+Install: \`brew tap vigeng/tap && brew install --cask bytelife\` (if your Homebrew sets HOMEBREW_REQUIRE_TAP_TRUST, run \`brew trust vigeng/tap\` once after tapping). The cask clears the Gatekeeper quarantine automatically.
+
+Important for direct downloads: the app is ad-hoc signed and not notarized, so if you install from this zip by hand you must remove the quarantine attribute yourself: \`xattr -cr /Applications/ByteLife.app\`."
 
 echo "==> Writing Casks/bytelife.rb"
 CASK=$(cat <<CASK_EOF
