@@ -206,6 +206,55 @@ final class SampleStoreTests: XCTestCase {
         XCTAssertEqual(series[.diskBytesRead], [0, 0, 0, 0, 0])
     }
 
+    func testHourlySeriesBucketsMinutesIntoTwentyFourHoursAcrossBoundaries() throws {
+        let store = try SampleStore(path: dbPath)
+        let day = DayBucket.dayEpoch(for: date(dayOffset: 0, minute: 0))
+        try store.record([
+            Sample(kind: .networkBytesIn, value: 10, timestamp: date(dayOffset: 0, minute: 0)),    // hour 0
+            Sample(kind: .networkBytesIn, value: 5, timestamp: date(dayOffset: 0, minute: 59)),     // hour 0
+            Sample(kind: .networkBytesIn, value: 100, timestamp: date(dayOffset: 0, minute: 60)),   // hour 1
+            Sample(kind: .networkBytesIn, value: 3, timestamp: date(dayOffset: 0, minute: 119)),    // hour 1
+            Sample(kind: .networkBytesIn, value: 7, timestamp: date(dayOffset: 0, minute: 1439)),   // hour 23
+            Sample(kind: .diskBytesRead, value: 42, timestamp: date(dayOffset: 0, minute: 61)),     // hour 1
+        ])
+
+        let series = try store.hourlySeries(kinds: [.networkBytesIn, .diskBytesRead], dayEpoch: day)
+
+        let net = try XCTUnwrap(series[.networkBytesIn])
+        XCTAssertEqual(net.count, 24)
+        XCTAssertEqual(net[0], 15)   // 10 + 5 both in the first hour
+        XCTAssertEqual(net[1], 103)  // 100 + 3 straddle minutes 60 and 119
+        XCTAssertEqual(net[23], 7)   // minute 1439 is the last hour
+        XCTAssertEqual(net.reduce(0, +), 125)
+
+        let disk = try XCTUnwrap(series[.diskBytesRead])
+        XCTAssertEqual(disk[1], 42)
+        XCTAssertEqual(disk[0], 0)
+    }
+
+    func testHourlySeriesEmptyDayAndAbsentKindsReadAsTwentyFourZeros() throws {
+        let store = try SampleStore(path: dbPath)
+        let day = DayBucket.dayEpoch(for: date(dayOffset: 0, minute: 30))
+        try store.record([
+            Sample(kind: .inputKeystrokes, value: 9, timestamp: date(dayOffset: 0, minute: 30)), // hour 0
+            // A sample on the next day must not leak into this day's buckets.
+            Sample(kind: .inputKeystrokes, value: 4, timestamp: date(dayOffset: 1, minute: 30)),
+        ])
+
+        let series = try store.hourlySeries(kinds: [.inputKeystrokes, .aiOutputTokens], dayEpoch: day)
+        XCTAssertEqual(series[.inputKeystrokes]?[0], 9)
+        XCTAssertEqual(series[.inputKeystrokes]?.reduce(0, +), 9)
+        // A requested kind with no rows on the day is present as 24 zeros, never missing.
+        XCTAssertEqual(series[.aiOutputTokens], Array(repeating: 0, count: 24))
+
+        // A day with no rows at all is 24 zeros for every requested kind.
+        let empty = DayBucket.dayEpoch(for: date(dayOffset: 5, minute: 0))
+        XCTAssertEqual(try store.hourlySeries(kinds: [.aiInputTokens], dayEpoch: empty),
+                       [.aiInputTokens: Array(repeating: 0, count: 24)])
+        // No kinds requested returns an empty result.
+        XCTAssertTrue(try store.hourlySeries(kinds: [], dayEpoch: day).isEmpty)
+    }
+
     func testPruneRemovesOldKeepsRecent() throws {
         let store = try SampleStore(path: dbPath)
         let today = DayBucket.dayEpoch(for: Date())

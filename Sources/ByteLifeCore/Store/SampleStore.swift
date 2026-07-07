@@ -413,6 +413,46 @@ public final class SampleStore: @unchecked Sendable {
         }
     }
 
+    /// The 24 hour buckets for `dayEpoch` and each requested kind, each bucket summed from that day's
+    /// minute rows (bucket = minute / 60) and zero where no sample fell in it. The result always holds
+    /// exactly 24 values per requested kind, so a requested kind absent from the day reads as all zeros
+    /// rather than being missing. One indexed range query over the day's contiguous rows on the
+    /// (day_epoch, minute, kind) primary key, never a full-table scan. Feeds the day dashboard's hourly
+    /// bars via the pure `DayStory` model.
+    public func hourlySeries(kinds: [MetricKind], dayEpoch: Int64) throws -> [MetricKind: [Int64]] {
+        guard !kinds.isEmpty else { return [:] }
+        return try queue.sync {
+            let placeholders = Array(repeating: "?", count: kinds.count).joined(separator: ",")
+            let stmt = try prepare("""
+                SELECT minute, kind, value FROM samples
+                WHERE day_epoch = ? AND kind IN (\(placeholders));
+                """)
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            for (i, kind) in kinds.enumerated() {
+                bindText(stmt, Int32(2 + i), kind.rawValue)
+            }
+            var result = Dictionary(
+                uniqueKeysWithValues: kinds.map { ($0, [Int64](repeating: 0, count: 24)) }
+            )
+            while true {
+                let rc = sqlite3_step(stmt)
+                if rc == SQLITE_ROW {
+                    let hour = Int(sqlite3_column_int(stmt, 0)) / 60
+                    guard hour >= 0, hour < 24 else { continue }
+                    guard let raw = sqlite3_column_text(stmt, 1) else { continue }
+                    guard let kind = MetricKind(rawValue: String(cString: raw)) else { continue }
+                    result[kind]?[hour] += sqlite3_column_int64(stmt, 2)
+                } else if rc == SQLITE_DONE {
+                    break
+                } else {
+                    throw SQLiteError.from(db: db, code: rc)
+                }
+            }
+            return result
+        }
+    }
+
     // MARK: - Reconciliations
 
     /// Posts a day's immutable receipt. Because `day_epoch` is the primary key, a second attempt on an

@@ -59,39 +59,6 @@ public struct LedgerPeriod: Equatable, Sendable, Identifiable {
     }
 }
 
-/// One recorded day's posted byte volume, the datum the General Ledger's history bar chart plots: a day
-/// epoch paired with that day's running balance (Traffic and Storage churn). Pure and deterministic.
-public struct HistoryPoint: Equatable, Sendable, Identifiable {
-    public let dayEpoch: Int64
-    /// The day's posted byte volume: every Traffic and Storage debit and credit summed, matching the
-    /// menubar hero figure and the receipt's POSTED BYTE VOLUME line.
-    public let volume: Int64
-
-    public var id: Int64 { dayEpoch }
-
-    public init(dayEpoch: Int64, volume: Int64) {
-        self.dayEpoch = dayEpoch
-        self.volume = volume
-    }
-}
-
-/// Builds the per-day posted-volume series that the window's history chart draws. Pure over the same
-/// multi-day totals query the ledger already runs, so the chart and the trial balance read from one
-/// source. Oldest-first with the day epochs attached, so the chart plots newest on the right.
-public enum HistorySeries {
-    /// One point per recorded day, oldest-first, each carrying that day's posted byte volume (the
-    /// `Ledger` running balance). Days present in `daysWithData` but absent from `totalsByDay` read as
-    /// zero volume; an empty day list yields an empty series.
-    public static func postedVolume(
-        daysWithData: [Int64],
-        totalsByDay: [Int64: [MetricKind: Int64]]
-    ) -> [HistoryPoint] {
-        daysWithData.sorted(by: <).map { day in
-            HistoryPoint(dayEpoch: day, volume: Ledger(totals: totalsByDay[day] ?? [:]).runningBalance)
-        }
-    }
-}
-
 /// One row of the all-history trial balance shown in the window's right rail: an account (or a labor
 /// sub-line) with its debit and credit columns already formatted in the account's own unit. Expense
 /// accounts carry an empty credit, which the ledger books honestly rather than faking a balancing side.

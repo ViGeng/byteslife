@@ -18,7 +18,7 @@ struct ByteLifeApplication: App {
         }
         .menuBarExtraStyle(.window)
 
-        // The General Ledger opens as its own document-style window. It is a stub in this iteration.
+        // The General Ledger opens as its own window: the Back Office day dashboard.
         Window("General Ledger", id: GeneralLedgerWindow.id) {
             GeneralLedgerView()
         }

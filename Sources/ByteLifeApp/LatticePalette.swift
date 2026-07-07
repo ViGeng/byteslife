@@ -87,6 +87,25 @@ enum LatticePalette {
         }
     }
 
+    // MARK: Ledger figure colors
+
+    /// Debit figures on the adaptive ledger chrome: the concept sheet's desaturated oxblood on light, a
+    /// legible warm red on dark. Distinct from `LedgerPalette.debit`, which stays fixed for the paper
+    /// receipt regardless of appearance.
+    static func debit(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 0xE0 / 255, green: 0x7A / 255, blue: 0x66 / 255)
+            : Color(red: 0x9B / 255, green: 0x3B / 255, blue: 0x2F / 255)
+    }
+
+    /// Credit figures on the adaptive ledger chrome: the concept sheet's muted ledger green on light, a
+    /// legible mint on dark. Distinct from `LedgerPalette.credit`, which stays fixed for the paper receipt.
+    static func credit(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 0x66 / 255, green: 0xC0 / 255, blue: 0x8A / 255)
+            : Color(red: 0x3B / 255, green: 0x6B / 255, blue: 0x4A / 255)
+    }
+
     // MARK: Glow
 
     /// Multiplier applied to every glow-shadow opacity. Glows soften on light (about half strength) so

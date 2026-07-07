@@ -154,6 +154,31 @@ Status: executed 2026-07-07 (see CHANGELOG.md, iteration 5). Approved the same d
 
 `swift build` and `swift test` green with the new core logic (per-day posted-volume series, barcode pattern derivation) tested; the packaged app renders the deck and the window correctly in both appearances (flip System Settings appearance to check), and a receipt exports to PNG and PDF files that open cleanly.
 
+---
+
+# Iteration 6: working share, and the Back Office redesign
+
+Status: executed 2026-07-07 (see CHANGELOG.md, iteration 6). Approved the same day from founder feedback on 0.4.0: the receipt Share button activates a target (Messages) but nothing attaches or sends; the General Ledger window as a whole is not good and needs a genuine redesign with much better UIs and layouts; the receipt paper itself is right and stays untouched. Post-execution notes: the review confirmed zero findings; from its minors, the share picker is now retained until its delegate reports close (show() is non-blocking, so a local could deallocate under the open menu), a share that cannot anchor alerts instead of silently no-opping, and the window loads once per open instead of twice. The share path still needs the founder's manual click to confirm end to end, since the share sheet cannot be exercised headless.
+
+## Share fix (root cause known)
+
+ReceiptShareItem defers the PNG render into the Transferable DataRepresentation closure. The share service pulls the data after the MenuBarExtra panel has closed and the SwiftUI transfer context is torn down, so the target app activates with no payload. Fix: render EAGERLY on the main actor when Share is clicked, write the PNG to a uniquely named file in the temporary directory, and present an `NSSharingServicePicker` with that file URL, anchored to a real NSView via an NSViewRepresentable coordinator (`show(relativeTo:of:preferredEdge:)`). File URLs are the reliable payload for Messages and Mail. The ShareLink/Transferable path is removed. Save flows keep NSSavePanel. Both receipt surfaces use the same control.
+
+## The Back Office: General Ledger window redesign (binding)
+
+The window becomes a two-pane day dashboard instead of four text rails. The accounts rail is removed (it only highlighted), and the sidebar history chart card is removed (posted byte volume is near-zero for the AI-backfill days, so it rendered as one lonely bar). All chrome uses the adaptive LatticePalette; accounting figures keep debit/credit semantics with scheme-aware variants added to the palette (light keeps oxblood #9B3B2F and ledger-green #3B6B4A; dark uses legible variants #E07A66 and #66C08A). Stamp colors stay: brass only BALANCED, oxblood FLAGGED, dial/ink arrears.
+
+- Sidebar (~280pt), PERIODS: a scrollable list, newest first. Each row: date ("Jul 7" plus a dim weekday), a stamp chip (OPEN in hairline style when unposted), and two thin activity minis under the date — an amber bar for the day's tokens and a teal bar for the day's bytes, each normalized across all listed days — so the list itself is the history chart. Selection gets a card background and a 2pt accent edge. Pinned at the sidebar bottom: a compact ALL TIME card, five rows (account, debit, credit in the scheme-aware figure colors), replacing the old trial-balance rail. Distance Hauled renders on one line.
+- Main pane, the day dashboard. Header: the full date ("Tuesday, July 7, 2026") with the stamp chip beside it; right-aligned, the day's posted byte volume as a hero figure with a dim label; the primary action beside it — "Close the books" for an unposted day, or the Share/Save receipt toolbar plus a "View receipt" toggle for a posted one.
+- Hero day chart: the selected day's 24 hours as the deck's flow chart (traffic teal and storage violet areas on one shared scale, hour axis marks at 0/6/12/18/24 in dim text), on a card, ~90pt tall.
+- Account cards below, in a grid: the Token Account card spans full width (Payable/Receivable with figure colors, exchange rate, cache memo, and 24 hourly amber bars), then a 2x2 grid of Traffic (teal), Storage (violet), Hours Under the Lamp (green, attentive minutes per hour bars, percent of day), and Labor (coral, keys plus distance). Every card: channel-colored title, the day total right-aligned, 24 hourly mini bars in the channel color, and the account's figures in compact rows. Hourly data comes from a new indexed single-day store query aggregating minute buckets into 24 hour buckets, shaped by a pure, tested core model (DayStory), alongside a tested DayActivity series for the sidebar minis.
+- For a posted day, the receipt strip renders below the account grid (paper on chassis, existing component) with the same toolbar. Days with no data show an honest empty state. Selection, exactly-once posting, arrears semantics, and the day-posted notification reload keep their behavior.
+- Window minimum size ~1000x640; version bumps to 0.5.0.
+
+## Verification
+
+`swift build` and `swift test` green with the new store query and core models tested; the packaged app's Share button actually attaches the PNG in Messages (manual check by the founder); the redesigned window reads as a dashboard in both appearances.
+
 ## Verification
 
 `swift build` and `swift test` green with the new core (rate math, normalization, peak-hold, minute-window query across midnight) under test; the packaged app relaunches and renders the Meter Bridge with live rates while the Ledger surfaces behave unchanged.

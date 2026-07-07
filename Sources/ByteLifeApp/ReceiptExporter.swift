@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import CoreTransferable
 import UniformTypeIdentifiers
 import ByteLifeCore
 
@@ -92,6 +91,34 @@ enum ReceiptExporter {
         }
     }
 
+    /// Renders the receipt PNG eagerly and writes it into a fresh, uniquely named subdirectory of the
+    /// temporary directory, keyed to the receipt's day. The per-invocation subdirectory guarantees repeated
+    /// shares never collide or clobber a file a target app is still holding. Returns the file URL, or nil on
+    /// a render or write failure.
+    static func temporaryPNG(for reconciliation: Reconciliation) -> URL? {
+        guard let data = pngData(for: reconciliation) else { return nil }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ByteLife-Share-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let url = dir.appendingPathComponent(defaultFilename(reconciliation, ext: "png"))
+            try data.write(to: url)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    /// Surfaces a render/write failure with the same plain warning alert the save path uses, so a silent
+    /// failed share never reads as success.
+    static func presentShareFailureAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Could not share the receipt"
+        alert.informativeText = "The receipt image could not be rendered."
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
     private static func dateStamp(_ dayEpoch: Int64) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(dayEpoch))
         let c = Calendar.current.dateComponents([.year, .month, .day], from: date)
@@ -99,45 +126,76 @@ enum ReceiptExporter {
     }
 }
 
-/// The PNG payload the system share sheet carries. Rendering is deferred into the transfer closure so the
-/// toolbar stays cheap, and the shared bytes are exactly `ReceiptExporter.pngData`, hash and barcode
-/// included.
-struct ReceiptShareItem: Transferable, Sendable {
-    let reconciliation: Reconciliation
-    let filename: String
+/// Holds the live NSView the sharing picker anchors to, and drives the eager share. Rendering the PNG on
+/// click (not deferred) is the whole fix: the bytes exist and are written to a file before the picker
+/// opens, so the target app receives the attachment even though the MenuBarExtra panel may close. The file
+/// URL is the reliable payload for Messages and Mail.
+@MainActor
+final class ReceiptSharePresenter: NSObject, ObservableObject, NSSharingServicePickerDelegate {
+    fileprivate weak var anchorView: NSView?
+    /// Retains the live picker while its menu is open. `show(relativeTo:)` returns immediately on
+    /// modern macOS, so a local would deallocate under the open menu and the share could die before
+    /// a target is chosen — the exact symptom this iteration fixes.
+    private var activePicker: NSSharingServicePicker?
 
-    static var transferRepresentation: some TransferRepresentation {
-        DataRepresentation(exportedContentType: .png) { item in
-            guard let data = await ReceiptExporter.pngData(for: item.reconciliation) else {
-                throw CocoaError(.fileWriteUnknown)
-            }
-            return data
+    func share(_ reconciliation: Reconciliation) {
+        guard let url = ReceiptExporter.temporaryPNG(for: reconciliation) else {
+            ReceiptExporter.presentShareFailureAlert()
+            return
         }
-        .suggestedFileName { $0.filename }
+        guard let anchor = anchorView else {
+            // No live anchor should be unreachable while the button is clickable; if it happens,
+            // a silent no-op must not read as success.
+            ReceiptExporter.presentShareFailureAlert()
+            return
+        }
+        let picker = NSSharingServicePicker(items: [url])
+        picker.delegate = self
+        activePicker = picker
+        picker.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+    }
+
+    nonisolated func sharingServicePicker(
+        _ sharingServicePicker: NSSharingServicePicker, didChoose service: NSSharingService?
+    ) {
+        // Fires on pick or cancel; the service (if any) now owns the file URL, so drop the picker.
+        Task { @MainActor in self.activePicker = nil }
+    }
+}
+
+/// A zero-cost NSView the sharing picker can anchor to. It fills the Share button's frame (installed as a
+/// background), so the picker pops from the button's bottom edge. The coordinator binding is the presenter,
+/// which captures the live view.
+private struct ShareAnchor: NSViewRepresentable {
+    let presenter: ReceiptSharePresenter
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        presenter.anchorView = view
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        presenter.anchorView = nsView
     }
 }
 
 /// The compact Share / Save toolbar shown on both receipt surfaces — the panel's receipt presentation and
-/// the General Ledger day detail — in the deck's monospaced button style. Share opens the system share
-/// sheet with the PNG (the social path); Save… offers PNG or PDF through a save panel.
+/// the General Ledger day detail — in the deck's monospaced button style. Share renders the receipt PNG
+/// eagerly and presents an `NSSharingServicePicker` with the written file (the social path); Save… offers
+/// PNG or PDF through a save panel.
 struct ReceiptToolbar: View {
     let reconciliation: Reconciliation
-
-    private var shareItem: ReceiptShareItem {
-        ReceiptShareItem(
-            reconciliation: reconciliation,
-            filename: ReceiptExporter.defaultFilename(reconciliation, ext: "png")
-        )
-    }
+    @StateObject private var presenter = ReceiptSharePresenter()
 
     var body: some View {
         HStack(spacing: 14) {
-            ShareLink(
-                item: shareItem,
-                preview: SharePreview("BYTELIFE receipt", image: Image(systemName: "doc.plaintext"))
-            ) {
+            Button {
+                presenter.share(reconciliation)
+            } label: {
                 Text("Share").font(.system(.caption, design: .monospaced))
             }
+            .background(ShareAnchor(presenter: presenter))
             Menu {
                 Button("PNG") { ReceiptExporter.save(reconciliation, as: .png) }
                 Button("PDF") { ReceiptExporter.save(reconciliation, as: .pdf) }
