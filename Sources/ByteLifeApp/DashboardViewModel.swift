@@ -38,12 +38,21 @@ final class DashboardViewModel: ObservableObject {
     private static let idleInterval: TimeInterval = 30
     /// Completed minutes of history the segment-bar meters read. A cheap, indexed `minuteSeries` fetch.
     private static let barWindow = 30
+    /// How stale the last snapshot may be and still be reused warm on reopen. Within this window the slow
+    /// background tick has kept the snapshot and EMA current, so the LIVE chip and rates are right on the
+    /// first frame; beyond it (a fresh launch, a long sleep) the state is a phantom and resets.
+    private static let warmMaxAge: TimeInterval = 45
 
     private let coordinator: AppCoordinator
     private var timer: Timer?
     private var panelVisible = false
-    /// The prior totals reading, so the meter can derive a live rate from the inter-poll delta. Only the
-    /// fast open-cadence ticks advance it, so a reopened panel measures against its last live reading.
+    /// Live mode, mirrored from the view's `@AppStorage("liveMode")`. The view owns it (the LIVE button
+    /// and its persistence) and hands the current value in on open and on every toggle; the view model
+    /// reads it only to choose the timer cadence.
+    private var liveMode = true
+    /// The prior totals reading, so the meter can derive a live rate from the inter-poll delta. Every
+    /// tick advances it now — the fast open ticks and the slow background tick alike — so the panel opens
+    /// warm against a recent reading instead of cold-starting on every reopen.
     private var previousSnapshot: MeterSnapshot?
     /// The carried smoothing and peak-hold state threaded between meter builds. Resets on relaunch.
     private var meterState: MeterState = .initial
@@ -59,31 +68,59 @@ final class DashboardViewModel: ObservableObject {
         )
         self.todaysReceipt = nil
         self.launchAtLoginEnabled = coordinator.isLaunchAtLoginEnabled
-        refresh()
-        startTimer(interval: Self.idleInterval)
+        refresh(publishMeter: false, animated: false)
+        startTimer(interval: Self.idleInterval, publishMeter: false, animated: false)
     }
 
     deinit { timer?.invalidate() }
 
-    /// The panel opened: fetch fresh figures immediately (animated, so stale values roll up to
-    /// current), re-read the login-item status, and switch to the fast cadence for live ticking.
-    /// Rates cold-start: the previous snapshot and the EMA state are dropped (peaks persist), because
-    /// the first reopened tick has no honest 2-second delta — carrying the stale reading would show a
-    /// phantom decaying rate and a close-gap average could forge a session peak.
-    func panelDidAppear() {
+    /// The panel opened: paint fresh figures immediately (WITHOUT animation, so the panel appears fully
+    /// formed rather than sliding a stale frame up to current), re-read the login-item status, and, in
+    /// live mode, switch to the fast cadence for live ticking. The `live` flag comes from the view's
+    /// persisted LIVE toggle.
+    ///
+    /// The state opens warm: when the last snapshot is recent (the slow background tick kept it current),
+    /// it is kept so the LIVE chip and rates are correct on the very first frame. Only after a long gap —
+    /// a fresh launch or a long sleep, where a carried reading would be a phantom — do the previous
+    /// snapshot and the EMA cold-start (peaks persist). The ticker always clears, since its close-gap
+    /// aggregate has no meaning across a reopen.
+    func panelDidAppear(live: Bool) {
         panelVisible = true
+        liveMode = live
         launchAtLoginEnabled = coordinator.isLaunchAtLoginEnabled
-        previousSnapshot = nil
-        meterState = meterState.resettingSmoothing()
+        if let previous = previousSnapshot, Date().timeIntervalSince(previous.timestamp) > Self.warmMaxAge {
+            previousSnapshot = nil
+            meterState = meterState.resettingSmoothing()
+        }
         tickerDeltas = []
-        refresh()
-        startTimer(interval: Self.openInterval)
+        refresh(publishMeter: true, animated: false)
+        if live {
+            startTimer(interval: Self.openInterval, publishMeter: true, animated: true)
+        } else {
+            startTimer(interval: Self.idleInterval, publishMeter: false, animated: false)
+        }
     }
 
-    /// The panel closed: drop back to the slow cadence that only keeps the menubar balance fresh.
+    /// The LIVE control toggled while the panel is open. Turning it on starts the fast cadence at once
+    /// with an animated refresh; turning it off stops the fast timer and drops back to the slow
+    /// background tick, freezing the readouts as of now (the view then dims them, since they are no
+    /// longer live). While the panel is closed this only records the value for the next open.
+    func setLiveMode(_ live: Bool) {
+        liveMode = live
+        guard panelVisible else { return }
+        if live {
+            refresh(publishMeter: true, animated: true)
+            startTimer(interval: Self.openInterval, publishMeter: true, animated: true)
+        } else {
+            startTimer(interval: Self.idleInterval, publishMeter: false, animated: false)
+        }
+    }
+
+    /// The panel closed: drop back to the slow cadence that keeps the menubar balance fresh and carries
+    /// the warm state forward.
     func panelDidDisappear() {
         panelVisible = false
-        startTimer(interval: Self.idleInterval)
+        startTimer(interval: Self.idleInterval, publishMeter: false, animated: false)
     }
 
     /// Raises the Input Monitoring prompt. The panel calls this from the needs-permission affordance.
@@ -97,7 +134,8 @@ final class DashboardViewModel: ObservableObject {
     @discardableResult
     func reconcileToday() -> Bool {
         coordinator.reconcileToday()
-        refresh()
+        // A user action flipping the day to posted: publish and roll the figures, as the panel is open.
+        refresh(publishMeter: true, animated: true)
         return todaysReceipt != nil
     }
 
@@ -108,17 +146,25 @@ final class DashboardViewModel: ObservableObject {
         launchAtLoginEnabled = coordinator.isLaunchAtLoginEnabled
     }
 
-    private func startTimer(interval: TimeInterval) {
+    /// Installs the polling timer at the given cadence. `publishMeter` and `animated` are the flags each
+    /// tick carries into `refresh`: the fast open timer publishes the rebuilt meter and rolls the digits;
+    /// the slow background timer only freshens the label and carries the warm state cheaply.
+    private func startTimer(interval: TimeInterval, publishMeter: Bool, animated: Bool) {
         timer?.invalidate()
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in self?.refresh(publishMeter: publishMeter, animated: animated) }
         }
         // .common so polling keeps running while the menubar panel tracks a mouse or menu interaction.
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
 
-    private func refresh() {
+    /// One poll. It always reads today's totals, reshapes the day sheet, and carries the meter state
+    /// forward. When `publishMeter` is set (the open single refresh and the fast open ticks) it also
+    /// fetches the minute series, rebuilds the meter, and publishes it with the ticker; otherwise (the
+    /// slow background tick) it skips the series fetch and republish, freshening only the label. When
+    /// `animated` is set the published figures roll to their new values via numeric content transitions.
+    private func refresh(publishMeter: Bool, animated: Bool) {
         let now = Date()
         let dayEpoch = DayBucket.dayEpoch(for: now)
         let totals = (try? coordinator.store.totals(forDayEpoch: dayEpoch)) ?? [:]
@@ -135,34 +181,40 @@ final class DashboardViewModel: ObservableObject {
             reconciliation: reconciliation
         )
 
-        // The meter only rebuilds on the fast open cadence: it needs the minute series, and the idle tick
-        // exists solely to keep the menubar balance fresh. Skipping it idle also keeps the store read cheap.
+        let current = MeterSnapshot(totals: totals, timestamp: now)
+
+        // The published meter needs the minute series; the background carry does not, so it builds with
+        // an empty series to stay cheap and takes only the resulting state. Either way the snapshot and
+        // meter state advance, so the panel stays warm.
         var bridge: MeterBridge?
         var ticker: [Int64]?
-        if panelVisible {
-            let series = (try? coordinator.store.minuteSeries(
+        var series: [MetricKind: [Int64]] = [:]
+        if publishMeter {
+            series = (try? coordinator.store.minuteSeries(
                 kinds: MeterBridge.trackedKinds, count: Self.barWindow, endingBefore: now
             )) ?? [:]
-            let current = MeterSnapshot(totals: totals, timestamp: now)
-            // The hex ticker prints real inter-poll byte deltas (traffic + storage), newest first.
-            if let previous = previousSnapshot {
+            // The hex ticker prints real inter-poll byte deltas (traffic + storage), newest first. It
+            // prints only over a short gap, the same honesty gate the peak uses: the first tick after a
+            // warm reopen spans the whole closed interval, and that close-gap aggregate must not print.
+            if let previous = previousSnapshot,
+               now.timeIntervalSince(previous.timestamp) <= MeterBridge.peakMaxElapsed {
                 let byteKinds: [MetricKind] = [.networkBytesIn, .networkBytesOut, .diskBytesRead, .diskBytesWritten]
                 let delta = byteKinds.reduce(Int64(0)) {
                     $0 + max(0, (current.totals[$1] ?? 0) - (previous.totals[$1] ?? 0))
                 }
                 ticker = Array(([delta] + tickerDeltas).prefix(4))
             }
-            let built = MeterBridge.build(
-                current: current,
-                previous: previousSnapshot,
-                series: series,
-                availabilityByFamily: availabilityByFamily,
-                priorState: meterState
-            )
-            previousSnapshot = current
-            meterState = built.state
-            bridge = built
         }
+        let built = MeterBridge.build(
+            current: current,
+            previous: previousSnapshot,
+            series: series,
+            availabilityByFamily: availabilityByFamily,
+            priorState: meterState
+        )
+        previousSnapshot = current
+        meterState = built.state
+        if publishMeter { bridge = built }
 
         let apply = {
             self.daySheet = sheet
@@ -171,7 +223,7 @@ final class DashboardViewModel: ObservableObject {
             if let bridge { self.meterBridge = bridge }
             if let ticker { self.tickerDeltas = ticker }
         }
-        if panelVisible {
+        if animated {
             // Figures roll to their new values via the views' numeric content transitions.
             withAnimation(.easeOut(duration: 0.5), apply)
         } else {

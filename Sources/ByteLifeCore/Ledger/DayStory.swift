@@ -97,8 +97,9 @@ public struct DayStory: Equatable, Sendable {
         )
     }
 
-    /// The kinds whose hourly series an account combines into its bars.
-    private static func kinds(for kind: LedgerAccountKind) -> [MetricKind] {
+    /// The kinds whose hourly series an account combines into its bars. Internal so `PeriodStory` sums
+    /// the same channels per day, keeping one definition of which metrics each account owns.
+    static func kinds(for kind: LedgerAccountKind) -> [MetricKind] {
         switch kind {
         case .token: return [.aiInputTokens, .aiOutputTokens]
         case .traffic: return [.networkBytesIn, .networkBytesOut]
@@ -121,8 +122,9 @@ public struct DayStory: Equatable, Sendable {
         return result
     }
 
-    /// The day-total headline in the account's own unit.
-    private static func headline(for kind: LedgerAccountKind, total: Int64) -> String {
+    /// The day-total headline in the account's own unit. Internal so `PeriodStory` formats an aggregate
+    /// total through the very same rule (tokens compact, bytes, HH:MM, or grouped keys).
+    static func headline(for kind: LedgerAccountKind, total: Int64) -> String {
         switch kind {
         case .token: return ByteFormatting.tokens(total)
         case .traffic, .storage: return ByteFormatting.bytes(total)

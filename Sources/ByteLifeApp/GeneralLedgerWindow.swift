@@ -16,23 +16,40 @@ enum GeneralLedgerWindow {
 /// `DayLabel`), so this stays a thin publisher over the store and the coordinator.
 @MainActor
 final class GeneralLedgerViewModel: ObservableObject {
-    /// The recorded days, newest first, each with its stamp state.
+    /// The sidebar granularity: single days, ISO weeks, or local-calendar months. Day keeps the original
+    /// day dashboard; the two aggregate granularities show the period story.
+    @Published private(set) var granularity: PeriodGranularity = .day
+    /// The recorded days, newest first, each with its stamp state (the Day-granularity sidebar rows).
     @Published private(set) var periods: [LedgerPeriod] = []
     /// Per-day tokens and posted byte volume, normalized across the list, for the sidebar activity minis.
     @Published private(set) var activity: [DayActivityRow] = []
+    /// The aggregate period rows for the Week and Month granularities, newest first.
+    @Published private(set) var periodGroups: [PeriodGroup] = []
     /// The all-history figures shown in the pinned ALL TIME card.
     @Published private(set) var trialBalance: [TrialBalanceRow] = []
-    /// The day whose dashboard the main pane shows.
+    /// The day whose dashboard the main pane shows in Day granularity.
     @Published private(set) var selectedDay: Int64?
+    /// The selected aggregate period, keyed by its newest member epoch, in Week and Month granularity.
+    @Published private(set) var selectedGroupID: Int64?
     /// The selected day's shaped dashboard: account cards, hero flow arrays, and the header hero figure.
     @Published private(set) var selectedStory: DayStory?
-    /// The stored receipt for the selected day, or nil when the day is still open.
+    /// The selected aggregate period's story: per-day bars, aggregate cards, and posted coverage.
+    @Published private(set) var selectedPeriodStory: PeriodStory?
+    /// The stored receipt for the selected day, or nil when the day is still open. Day granularity only;
+    /// aggregate periods never compose a receipt.
     @Published private(set) var selectedReceipt: Reconciliation?
 
     /// Today's epoch, so the header can distinguish a still-open today from a closeable past day.
     let todayEpoch: Int64
     private let coordinator: AppCoordinator
     private var postObserver: NSObjectProtocol?
+
+    /// The recorded days newest-first and the multi-day rollups and stamps behind them, cached from the
+    /// last reload so a granularity switch or an aggregate selection groups and shapes purely in memory,
+    /// with no fresh store query.
+    private var days: [Int64] = []
+    private var totalsByDay: [Int64: [MetricKind: Int64]] = [:]
+    private var stampsByDay: [Int64: String] = [:]
 
     private var store: SampleStore { coordinator.store }
 
@@ -55,26 +72,80 @@ final class GeneralLedgerViewModel: ObservableObject {
     }
 
     /// Reloads the period list, the sidebar activity, and the all-history figures, preserving the current
-    /// selection when it still exists. One multi-day rollup feeds the activity minis; the all-history
-    /// trial balance keeps its own single query.
+    /// selection when it still exists. One multi-day rollup feeds the activity minis and, cached, every
+    /// aggregate grouping and story; the all-history trial balance keeps its own single query.
     func reload() {
-        let days = (try? store.dayEpochsWithData()) ?? []
-        let stamps = (try? store.reconciledStamps()) ?? [:]
-        let totalsByDay = (try? store.totals(forDayEpochs: days)) ?? [:]
-        periods = LedgerPeriod.list(daysWithData: days, stampsByDay: stamps)
+        days = (try? store.dayEpochsWithData()) ?? []
+        stampsByDay = (try? store.reconciledStamps()) ?? [:]
+        totalsByDay = (try? store.totals(forDayEpochs: days)) ?? [:]
+        periods = LedgerPeriod.list(daysWithData: days, stampsByDay: stampsByDay)
         activity = DayActivity.rows(daysWithData: days, totalsByDay: totalsByDay)
         trialBalance = TrialBalance.rows(totals: (try? store.trialBalance()) ?? [:])
+        rebuildGroups()
 
-        if selectedDay == nil || !periods.contains(where: { $0.dayEpoch == selectedDay }) {
-            selectedDay = periods.first?.dayEpoch
+        if granularity == .day {
+            if selectedDay == nil || !periods.contains(where: { $0.dayEpoch == selectedDay }) {
+                selectedDay = periods.first?.dayEpoch
+            }
+            loadDayDetail()
+        } else {
+            if selectedGroupID == nil || !periodGroups.contains(where: { $0.id == selectedGroupID }) {
+                selectedGroupID = periodGroups.first?.id
+            }
+            loadPeriodDetail()
         }
-        loadDetail()
     }
 
-    /// Selects a period and loads its dashboard.
+    /// Switches granularity and re-selects. Day keeps or defaults its day selection; an aggregate carries
+    /// the current day into the period that contains it when possible, else selects the newest period.
+    /// Purely in-memory: the cached rollups are regrouped, with no store query.
+    func setGranularity(_ newValue: PeriodGranularity) {
+        guard newValue != granularity else { return }
+        // Carry the period on screen across the switch: from an aggregate granularity that is the
+        // selected group's newest member day (so Week -> Month lands on the month containing the week
+        // being viewed), from Day it is the selected day. selectedDay alone goes stale while browsing
+        // aggregates, which used to make the pane jump to an unrelated period.
+        let carryDay: Int64? = granularity == .day
+            ? selectedDay
+            : periodGroups.first(where: { $0.id == selectedGroupID })?.dayEpochs.first ?? selectedDay
+        granularity = newValue
+        rebuildGroups()
+        if newValue == .day {
+            if let carryDay, periods.contains(where: { $0.dayEpoch == carryDay }) {
+                selectedDay = carryDay
+            } else if selectedDay == nil || !periods.contains(where: { $0.dayEpoch == selectedDay }) {
+                selectedDay = periods.first?.dayEpoch
+            }
+            loadDayDetail()
+        } else {
+            if let carryDay,
+               let group = periodGroups.first(where: { $0.dayEpochs.contains(carryDay) }) {
+                selectedGroupID = group.id
+            } else {
+                selectedGroupID = periodGroups.first?.id
+            }
+            loadPeriodDetail()
+        }
+    }
+
+    /// Selects a day and loads its dashboard.
     func select(day: Int64) {
         selectedDay = day
-        loadDetail()
+        loadDayDetail()
+    }
+
+    /// Selects an aggregate period and shapes its story from the cached rollups.
+    func select(group id: Int64) {
+        selectedGroupID = id
+        loadPeriodDetail()
+    }
+
+    /// Jumps to a day in Day granularity, the target of a coverage chip in an aggregate story.
+    func jumpToDay(_ day: Int64) {
+        granularity = .day
+        periodGroups = []
+        selectedDay = day
+        loadDayDetail()
     }
 
     /// The activity row for a day, for the sidebar minis; nil when the day carries no recorded activity.
@@ -87,9 +158,18 @@ final class GeneralLedgerViewModel: ObservableObject {
         reload()
     }
 
+    /// Rebuilds the aggregate rows from the cached rollups for the current granularity. Day granularity
+    /// uses the `periods` list, so it clears the group rows.
+    private func rebuildGroups() {
+        periodGroups = granularity.isAggregate
+            ? PeriodGrouping.groups(daysWithData: days, granularity: granularity,
+                                    totalsByDay: totalsByDay, stampsByDay: stampsByDay)
+            : []
+    }
+
     /// Builds the selected day's story from one indexed hourly query and its totals, and reads its stored
     /// receipt. An absent selection clears both.
-    private func loadDetail() {
+    private func loadDayDetail() {
         guard let day = selectedDay else {
             selectedStory = nil
             selectedReceipt = nil
@@ -99,6 +179,23 @@ final class GeneralLedgerViewModel: ObservableObject {
         let totals = (try? store.totals(forDayEpoch: day)) ?? [:]
         let hourly = (try? store.hourlySeries(kinds: DayStory.hourlyKinds, dayEpoch: day)) ?? [:]
         selectedStory = DayStory.build(dayEpoch: day, totals: totals, hourly: hourly)
+    }
+
+    /// Shapes the selected aggregate period's story from the cached per-day rollups, with no store query
+    /// and no hourly fetch: the aggregate charts are per-day bars drawn from the same totals the sidebar
+    /// already holds. An absent selection clears the story.
+    private func loadPeriodDetail() {
+        guard let id = selectedGroupID,
+              let group = periodGroups.first(where: { $0.id == id }) else {
+            selectedPeriodStory = nil
+            return
+        }
+        selectedPeriodStory = PeriodStory.build(
+            label: group.label,
+            dayEpochs: group.dayEpochs,
+            totalsByDay: totalsByDay,
+            stampsByDay: stampsByDay
+        )
     }
 }
 
@@ -139,7 +236,7 @@ struct GeneralLedgerView: View {
             sidebar
                 .frame(width: 280)
             vRule()
-            dayDashboard
+            mainPane
                 .frame(minWidth: 660, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 1000, minHeight: 640)
@@ -149,12 +246,26 @@ struct GeneralLedgerView: View {
         .onChange(of: vm.selectedDay) { _, _ in showingReceipt = true }
     }
 
+    /// The main pane is the day dashboard in Day granularity and the aggregate period story in Week or
+    /// Month granularity.
+    @ViewBuilder
+    private var mainPane: some View {
+        if vm.granularity == .day {
+            dayDashboard
+        } else {
+            periodDashboard
+        }
+    }
+
     // MARK: - Sidebar: periods and the ALL TIME card
 
     private var sidebar: some View {
         VStack(spacing: 0) {
             railHeader("PERIODS")
-            if vm.periods.isEmpty {
+            granularityPicker
+                .padding(.horizontal, 10)
+                .padding(.vertical, 10)
+            if listIsEmpty {
                 Text("No periods on file yet.")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(dim)
@@ -164,8 +275,10 @@ struct GeneralLedgerView: View {
             } else {
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 6) {
-                        ForEach(vm.periods) { period in
-                            sidebarRow(period)
+                        if vm.granularity == .day {
+                            ForEach(vm.periods) { sidebarRow($0) }
+                        } else {
+                            ForEach(vm.periodGroups) { groupRow($0) }
                         }
                     }
                     .padding(10)
@@ -174,6 +287,41 @@ struct GeneralLedgerView: View {
             hRule()
             allTimeCard
         }
+    }
+
+    /// True when the sidebar list for the current granularity has nothing to show.
+    private var listIsEmpty: Bool {
+        vm.granularity == .day ? vm.periods.isEmpty : vm.periodGroups.isEmpty
+    }
+
+    /// The Day / Week / Month segmented control, hand-built so it stays monospaced and adaptive: the
+    /// selected segment fills with the card color, the rest read dim on the chassis.
+    private var granularityPicker: some View {
+        HStack(spacing: 0) {
+            ForEach(PeriodGranularity.allCases, id: \.self) { g in
+                Button {
+                    vm.setGranularity(g)
+                } label: {
+                    Text(g.title.uppercased())
+                        .font(.system(.caption, design: .monospaced).weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .foregroundStyle(vm.granularity == g ? dial : dim)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(vm.granularity == g ? LatticePalette.card(scheme) : .clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(LatticePalette.chassis(scheme))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(LatticePalette.hairline(scheme), lineWidth: 1))
+        )
     }
 
     /// One period row: the date and a dim weekday, the stamp chip, and the two normalized activity minis
@@ -203,21 +351,67 @@ struct GeneralLedgerView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(selected ? LatticePalette.card(scheme) : .clear)
-            )
-            .overlay(alignment: .leading) {
-                if selected {
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(LatticePalette.teal(scheme))
-                        .frame(width: 2)
-                        .padding(.vertical, 4)
-                }
-            }
+            .background(rowFill(selected))
+            .overlay(alignment: .leading) { rowAccent(selected) }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    /// One aggregate period row (Week or Month): the period label, its posted-coverage chip, and the same
+    /// two normalized activity minis (amber tokens over teal bytes) the day rows carry, so the list reads
+    /// as a history chart at any granularity. Selection gets the same card fill and teal accent edge.
+    private func groupRow(_ group: PeriodGroup) -> some View {
+        let selected = vm.selectedGroupID == group.id
+        return Button {
+            vm.select(group: group.id)
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(group.label)
+                        .font(.system(.callout, design: .monospaced).weight(.semibold))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Spacer()
+                    coverageChip(posted: group.postedCount, total: group.dayCount)
+                }
+                VStack(spacing: 3) {
+                    mini(fraction: group.tokenFraction, color: LatticePalette.amber(scheme))
+                    mini(fraction: group.byteFraction, color: LatticePalette.teal(scheme))
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(rowFill(selected))
+            .overlay(alignment: .leading) { rowAccent(selected) }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The selected-row card fill, clear when unselected.
+    private func rowFill(_ selected: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 6).fill(selected ? LatticePalette.card(scheme) : .clear)
+    }
+
+    /// The 2pt teal accent edge a selected row carries on its leading side.
+    @ViewBuilder
+    private func rowAccent(_ selected: Bool) -> some View {
+        if selected {
+            RoundedRectangle(cornerRadius: 1)
+                .fill(LatticePalette.teal(scheme))
+                .frame(width: 2)
+                .padding(.vertical, 4)
+        }
+    }
+
+    /// The aggregate posted-coverage chip ("3/7"): brass-tinted and filled once every member day is
+    /// posted, a dim hairline outline otherwise.
+    private func coverageChip(posted: Int, total: Int) -> some View {
+        let full = total > 0 && posted == total
+        return chip("\(posted)/\(total)", color: full ? LedgerPalette.brass : dim, filled: full)
     }
 
     /// One normalized activity mini: a thin track with a fill whose width is the day's fraction of the
@@ -463,7 +657,7 @@ struct GeneralLedgerView: View {
                     .foregroundStyle(dial)
                     .lineLimit(1)
             }
-            hourlyBars(card.hourly, color: color)
+            channelBars(card.hourly, color: color)
             VStack(spacing: 3) {
                 ForEach(card.lines) { line in
                     figureRow(line)
@@ -475,9 +669,10 @@ struct GeneralLedgerView: View {
         .background(cardShape)
     }
 
-    /// The 24 hourly amounts as thin bars in the channel color, each normalized to the card's own peak so
-    /// the day's shape reads even when a single account dominates the byte volume.
-    private func hourlyBars(_ values: [Int64], color: Color) -> some View {
+    /// A strip of thin bars in the channel color, each normalized to the strip's own peak so the shape
+    /// reads even when a single account dominates the byte volume. Shared by a day's 24 hourly bars and an
+    /// aggregate period's per-day bars, since both are just a channel amount over an ordered window.
+    private func channelBars(_ values: [Int64], color: Color) -> some View {
         let maxV = max(values.max() ?? 0, 1)
         return Canvas { context, size in
             let n = max(values.count, 1)
@@ -530,6 +725,197 @@ struct GeneralLedgerView: View {
         }
         .padding(.top, 4)
         .transition(.opacity)
+    }
+
+    // MARK: - Main pane: the aggregate period dashboard
+
+    /// The aggregate story shown for a Week or Month selection: a header with the period label, coverage
+    /// chip, and posted-volume hero; a hero chart of per-day traffic/storage bars across the period; the
+    /// aggregate account cards (Token full width, then a 2x2 grid) with per-day mini bars; and, in place of
+    /// the receipt, a posted-coverage card whose day chips jump back to Day granularity. Aggregate periods
+    /// never compose a receipt and never show a Close action.
+    @ViewBuilder
+    private var periodDashboard: some View {
+        if let story = vm.selectedPeriodStory, !story.days.isEmpty {
+            VStack(spacing: 0) {
+                periodHeader(story)
+                hRule()
+                ScrollView(.vertical) {
+                    VStack(spacing: 12) {
+                        periodHeroChart(story)
+                        periodAccountCard(story.cards[0])        // Token, full width
+                        LazyVGrid(columns: gridColumns, spacing: 12) {
+                            ForEach(Array(story.cards.dropFirst()), content: periodAccountCard)
+                        }
+                        coverageSection(story)
+                    }
+                    .padding(16)
+                }
+            }
+        } else {
+            emptyState
+        }
+    }
+
+    /// The period header: the label with its coverage chip, a day-count status line, and the aggregate
+    /// posted-volume hero figure. There is no primary action, because an aggregate period never posts.
+    private func periodHeader(_ story: PeriodStory) -> some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 10) {
+                    Text(story.label)
+                        .font(.system(.title3, design: .monospaced).weight(.semibold))
+                    coverageChip(posted: story.postedCount, total: story.dayCount)
+                }
+                Text(story.dayCount == 1 ? "1 recorded day" : "\(story.dayCount) recorded days")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(dim)
+            }
+            Spacer(minLength: 12)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(story.postedByteVolume)
+                    .font(.system(size: 24, design: .monospaced).weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(dial)
+                Text("POSTED BYTE VOLUME")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(dim)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
+
+    private struct DayBar: Identifiable {
+        let series: String
+        let day: Int
+        let value: Double
+        var id: String { "\(series)-\(day)" }
+    }
+
+    /// The period's per-day Traffic and Storage totals as grouped bars on one shared byte scale (teal
+    /// traffic, violet storage), with day-of-month axis marks. Drawn from the period story's per-day
+    /// arrays, so it needs no hourly fetch.
+    private func periodHeroChart(_ story: PeriodStory) -> some View {
+        // Bars plot by chronological index, never by day-of-month: a week crossing a month boundary
+        // (Jun 29 - Jul 5) must read left-to-right in time, not scrambled by calendar numbering. The
+        // axis labels translate the index back to the day-of-month.
+        var bars: [DayBar] = []
+        for i in story.days.indices {
+            bars.append(DayBar(series: "traffic", day: i, value: Double(story.trafficPerDay[i])))
+            bars.append(DayBar(series: "storage", day: i, value: Double(story.storagePerDay[i])))
+        }
+        return Chart(bars) { bar in
+            BarMark(
+                x: .value("Day", bar.day),
+                y: .value("Bytes", bar.value),
+                width: .fixed(6)
+            )
+            .foregroundStyle(by: .value("Series", bar.series))
+            .position(by: .value("Series", bar.series))
+        }
+        .chartForegroundStyleScale([
+            "traffic": LatticePalette.teal(scheme),
+            "storage": LatticePalette.violet(scheme),
+        ])
+        .chartLegend(.hidden)
+        .chartYAxis(.hidden)
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 6)) { value in
+                AxisGridLine().foregroundStyle(LatticePalette.hairline(scheme))
+                AxisValueLabel {
+                    if let index = value.as(Int.self), story.days.indices.contains(index) {
+                        Text("\(story.days[index].dayOfMonth)")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(dim)
+                    }
+                }
+            }
+        }
+        .frame(height: 90)
+        .padding(10)
+        .background(cardShape)
+    }
+
+    /// One aggregate account card: the channel-colored title, the period total right-aligned, the per-day
+    /// bars in the channel color, and the account's aggregate figure rows in the debit/credit/memo colors.
+    /// The same card structure as a day's, with the bar strip reading per day instead of per hour.
+    private func periodAccountCard(_ card: PeriodStoryCard) -> some View {
+        let color = channelColor(card.kind)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(card.title.uppercased())
+                    .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(color)
+                    .lineLimit(1)
+                Spacer()
+                Text(card.headline)
+                    .font(.system(.callout, design: .monospaced).weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(dial)
+                    .lineLimit(1)
+            }
+            channelBars(card.perDay, color: color)
+            VStack(spacing: 3) {
+                ForEach(card.lines) { line in
+                    figureRow(line)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardShape)
+    }
+
+    /// The posted-coverage card that stands in for the receipt on an aggregate period: the coverage line
+    /// ("3 of 7 days posted") over a wrapping row of the member days' stamp chips. Clicking a chip switches
+    /// to Day granularity and selects that day.
+    private func coverageSection(_ story: PeriodStory) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("COVERAGE")
+                    .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(dim)
+                Spacer()
+                Text(story.coverageText)
+                    .font(.system(.caption, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(story.fullyPosted ? LedgerPalette.brass : dim)
+            }
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 66), spacing: 6, alignment: .leading)],
+                alignment: .leading,
+                spacing: 6
+            ) {
+                ForEach(story.days) { day in
+                    dayCoverageChip(day)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardShape)
+    }
+
+    /// One member day as a clickable stamp chip: a posted day tints filled in its stamp color, an open day
+    /// reads as a dim hairline outline. Tapping it jumps to that day in Day granularity.
+    private func dayCoverageChip(_ day: PeriodDay) -> some View {
+        let color: Color
+        let filled: Bool
+        switch day.state {
+        case .posted(let stamp):
+            color = stampColor(stamp)
+            filled = true
+        case .unposted:
+            color = dim
+            filled = false
+        }
+        return Button {
+            vm.jumpToDay(day.dayEpoch)
+        } label: {
+            chip(DayLabel.short(dayEpoch: day.dayEpoch), color: color, filled: filled)
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Empty state

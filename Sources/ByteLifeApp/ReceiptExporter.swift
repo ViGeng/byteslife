@@ -165,8 +165,8 @@ final class ReceiptSharePresenter: NSObject, ObservableObject, NSSharingServiceP
 
 /// A zero-cost NSView the sharing picker can anchor to. It fills the Share button's frame (installed as a
 /// background), so the picker pops from the button's bottom edge. The coordinator binding is the presenter,
-/// which captures the live view.
-private struct ShareAnchor: NSViewRepresentable {
+/// which captures the live view. Used inside the stable Receipt window, where anchoring stays valid.
+struct ShareAnchor: NSViewRepresentable {
     let presenter: ReceiptSharePresenter
 
     func makeNSView(context: Context) -> NSView {
@@ -180,30 +180,45 @@ private struct ShareAnchor: NSViewRepresentable {
     }
 }
 
-/// The compact Share / Save toolbar shown on both receipt surfaces — the panel's receipt presentation and
-/// the General Ledger day detail — in the deck's monospaced button style. Share renders the receipt PNG
-/// eagerly and presents an `NSSharingServicePicker` with the written file (the social path); Save… offers
-/// PNG or PDF through a save panel.
+/// The Save… control shared by every receipt surface: PNG or PDF through a blocking save panel. Save is
+/// unaffected by the window rework because `NSSavePanel` runs modally and needs no stable host window.
+struct ReceiptSaveMenu: View {
+    let reconciliation: Reconciliation
+
+    var body: some View {
+        Menu {
+            Button("PNG") { ReceiptExporter.save(reconciliation, as: .png) }
+            Button("PDF") { ReceiptExporter.save(reconciliation, as: .pdf) }
+        } label: {
+            Text("Save…").font(.system(.caption, design: .monospaced))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+}
+
+/// The compact Share / Save toolbar shown on the panel's receipt presentation and the General Ledger day
+/// detail, in the deck's monospaced button style. Share no longer presents the picker in place: a
+/// compose-style target (Messages, Mail) attaches its session to the host window, and the menubar panel
+/// dies the moment the target activates, so the share arrives empty. Share instead opens the stable Receipt
+/// window for this day, which comes to front and auto-presents the picker anchored inside itself. Save…
+/// stays inline everywhere.
 struct ReceiptToolbar: View {
     let reconciliation: Reconciliation
-    @StateObject private var presenter = ReceiptSharePresenter()
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 14) {
             Button {
-                presenter.share(reconciliation)
+                // Mark this day as the one to auto-share, then open (or raise) its Receipt window and
+                // activate the app so the window can become key from the accessory process.
+                ReceiptWindowCoordinator.shared.pendingShareDay = reconciliation.dayEpoch
+                openWindow(id: ReceiptWindow.id, value: reconciliation.dayEpoch)
+                NSApp.activate(ignoringOtherApps: true)
             } label: {
                 Text("Share").font(.system(.caption, design: .monospaced))
             }
-            .background(ShareAnchor(presenter: presenter))
-            Menu {
-                Button("PNG") { ReceiptExporter.save(reconciliation, as: .png) }
-                Button("PDF") { ReceiptExporter.save(reconciliation, as: .pdf) }
-            } label: {
-                Text("Save…").font(.system(.caption, design: .monospaced))
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+            ReceiptSaveMenu(reconciliation: reconciliation)
         }
     }
 }

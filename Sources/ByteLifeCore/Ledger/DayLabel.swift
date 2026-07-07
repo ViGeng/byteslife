@@ -25,6 +25,16 @@ public enum DayLabel {
         return "\(name(fullWeekdays, c.weekday)), \(name(fullMonths, c.month)) \(c.day ?? 0), \(c.year ?? 0)"
     }
 
+    /// "July 2026": full month name and year, for a month-granularity period label.
+    public static func monthYear(dayEpoch: Int64, calendar: Calendar = .current) -> String {
+        let c = components(dayEpoch, calendar)
+        return "\(name(fullMonths, c.month)) \(c.year ?? 0)"
+    }
+
+    /// The three-letter English month abbreviation for a 1-based month index ("Jul"), locale-independent
+    /// and shared with the period week-span labels so a week span and a day label read identically.
+    public static func abbreviatedMonth(_ month: Int) -> String { name(shortMonths, month) }
+
     private static func components(_ dayEpoch: Int64, _ calendar: Calendar) -> DateComponents {
         let date = Date(timeIntervalSince1970: TimeInterval(dayEpoch))
         return calendar.dateComponents([.year, .month, .day, .weekday], from: date)

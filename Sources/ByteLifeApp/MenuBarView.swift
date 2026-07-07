@@ -22,6 +22,16 @@ struct ByteLifeApplication: App {
         Window("General Ledger", id: GeneralLedgerWindow.id) {
             GeneralLedgerView()
         }
+
+        // The Receipt window is value-presented by accounting day: the stable, titled host from which a
+        // receipt shares (so compose targets like Messages keep their session). One window per day; a
+        // repeat Share for the same day raises the existing one.
+        WindowGroup(id: ReceiptWindow.id, for: Int64.self) { $dayEpoch in
+            if let dayEpoch {
+                ReceiptWindowView(dayEpoch: dayEpoch)
+            }
+        }
+        .windowResizability(.contentSize)
     }
 }
 
@@ -33,6 +43,8 @@ struct MenuBarView: View {
     @ObservedObject var viewModel: DashboardViewModel
     @Environment(\.openWindow) private var openWindow
     @Environment(\.colorScheme) private var scheme
+    /// The persisted LIVE toggle, shared by key with the header chip. Read on open to pick the cadence.
+    @AppStorage("liveMode") private var liveMode = true
     /// When true, the panel shows the stored receipt strip in place of the meter. Set on posting and by
     /// the posted-state "View receipt" control; cleared by the strip's Done button.
     @State private var showingReceipt = false
@@ -50,8 +62,8 @@ struct MenuBarView: View {
         .frame(width: 360, alignment: .leading)
         .background(LatticePalette.chassis(scheme))
         .foregroundStyle(ink)
-        // The panel polls fast and animates while open, slow and label-only while closed.
-        .onAppear { viewModel.panelDidAppear() }
+        // The panel polls fast and animates while open in live mode, slow and label-only otherwise.
+        .onAppear { viewModel.panelDidAppear(live: liveMode) }
         .onDisappear { viewModel.panelDidDisappear() }
     }
 

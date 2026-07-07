@@ -2,7 +2,18 @@
 
 ByteLife is a native macOS app that tracks the digital side of a person's existence, centered on the concept of bytes. It aggregates AI token usage, network traffic, disk activity, screen time, and physical input into one dashboard of digital life.
 
-Version 0.5.0 is implemented and running. The menubar shows today's running balance, and the dropdown is the Byte Flow deck: a chart-led live dashboard that adapts to the system appearance (a dark instrument in dark mode, a light one in light mode), with a hero flow chart of the last half hour (network and disk on one shared scale), a gradient sparkline and glowing live rate per channel in its own signal color, an attention ring, a prompted-versus-generated token ratio bar, and a hex ticker printing real inter-poll byte deltas. The Ledger remains the record layer underneath. The General Ledger window is the Back Office: a periods sidebar whose rows carry per-day token and byte activity minis plus a pinned all-time summary, and a day dashboard with a 24-hour flow chart, per-account cards with hourly activity bars, and the day's receipt below. The Reconcile ritual closes each day into an immutable receipt rendered as a real thermal strip (torn edges, a barcode drawn from its SHA-256 content hash) that shares to the system share sheet or saves as PNG or vector PDF. The concept brief below and the research under docs/ remain the design ground truth.
+Version 0.6.0 is implemented and running. The menubar shows today's running balance, and the dropdown is the Byte Flow deck: a chart-led live dashboard that adapts to the system appearance, opens fully formed with warm live rates on the first frame, and carries a LIVE toggle (on: two-second live ticking while open; off: figures as of the click; either way only a slow thirty-second background tick runs while closed). The Ledger remains the record layer underneath. The General Ledger window is the Back Office: a periods sidebar with Day, Week, and Month granularity whose rows carry token and byte activity minis plus a pinned all-time summary, and a period dashboard with flow charts, per-account cards, posted-coverage chips for aggregate periods, and the day's receipt below. The Reconcile ritual closes each day into an immutable receipt rendered as a real thermal strip (torn edges, a barcode drawn from its SHA-256 content hash); sharing opens a dedicated Receipt window so compose targets like Messages get a stable host, and saving offers PNG or vector PDF. The concept brief below and the research under docs/ remain the design ground truth.
+
+## Installing
+
+ByteLife installs from the public Homebrew tap (the source repo itself is currently private; release zips are published on the tap):
+
+```
+brew tap vigeng/tap
+brew install --cask bytelife
+```
+
+The app is ad-hoc signed and not notarized; the cask clears the quarantine flag on install. `scripts/release.sh` publishes a new version end to end (build, zip, GitHub release on the tap, cask update).
 
 ## Premise
 

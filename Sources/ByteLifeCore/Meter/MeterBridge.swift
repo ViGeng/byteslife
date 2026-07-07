@@ -110,16 +110,23 @@ public struct MeterSnapshot: Equatable, Sendable {
 }
 
 /// The carry state threaded between successive builds: each channel's last smoothed rate (the EMA's
-/// previous value) and its session peak-hold. The view model holds one of these and feeds it back in on
-/// every poll; it starts empty and resets to empty on relaunch (peak-hold is per-session in v1).
+/// previous value), its session peak-hold, and the peak-only EMA that feeds it. The view model holds one
+/// of these and feeds it back in on every poll; it starts empty and resets to empty on relaunch
+/// (peak-hold is per-session in v1).
 public struct MeterState: Equatable, Sendable {
     public let smoothedRate: [MeterChannelKind: Double]
     public let peakRate: [MeterChannelKind: Double]
+    /// The peak-only EMA: it integrates exclusively short-gap measurements and resets to zero whenever a
+    /// long gap breaks the chain, so a background or gap average can never launder its residue into a
+    /// session peak through the display EMA's carry.
+    public let peakSmoothed: [MeterChannelKind: Double]
 
     public init(smoothedRate: [MeterChannelKind: Double] = [:],
-                peakRate: [MeterChannelKind: Double] = [:]) {
+                peakRate: [MeterChannelKind: Double] = [:],
+                peakSmoothed: [MeterChannelKind: Double] = [:]) {
         self.smoothedRate = smoothedRate
         self.peakRate = peakRate
+        self.peakSmoothed = peakSmoothed
     }
 
     /// The launch state: no prior smoothing, no peaks held.
@@ -129,7 +136,7 @@ public struct MeterState: Equatable, Sendable {
     /// panel must cold-start its rates at zero (the first tick has no honest 2-second delta to show), but
     /// the session peak-hold is a fact about the session, not about the panel being open.
     public func resettingSmoothing() -> MeterState {
-        MeterState(smoothedRate: [:], peakRate: peakRate)
+        MeterState(smoothedRate: [:], peakRate: peakRate, peakSmoothed: [:])
     }
 }
 
@@ -229,6 +236,13 @@ public struct MeterBridge: Equatable, Sendable {
     /// throughput swings, light enough to damp the twitch of a 2-second poll.
     public static let emaAlpha = 0.5
 
+    /// The longest inter-snapshot gap over which a delta still counts as an honest live reading for
+    /// peak-hold. The open 2-second poll qualifies; the 30-second background carry and a wake-from-sleep
+    /// gap do not. A long gap still yields a truthful recent average for the smoothed rate, but its gap
+    /// average must never forge a session peak. Ten seconds spans the open cadence with room to spare
+    /// while excluding the background tick.
+    public static let peakMaxElapsed: TimeInterval = 10
+
     /// The tag a permission-gated or otherwise uncalibrated channel engraves.
     public static let uncalibratedTag = "UNCALIBRATED"
     /// The tag a source-missing COGNITION channel engraves (no local AI log to read).
@@ -251,6 +265,7 @@ public struct MeterBridge: Equatable, Sendable {
         var channels: [MeterChannel] = []
         var smoothedOut: [MeterChannelKind: Double] = [:]
         var peakOut: [MeterChannelKind: Double] = [:]
+        var peakSmoothedOut: [MeterChannelKind: Double] = [:]
 
         for kind in MeterChannelKind.allCases {
             let availability = availabilityByFamily[kind.family] ?? .disabled
@@ -279,13 +294,24 @@ public struct MeterBridge: Equatable, Sendable {
             // absorbs counter noise and the midnight totals reset (a negative delta reads as zero); a
             // zero or missing elapsed holds the last smoothed value rather than dividing by zero.
             let priorSmoothed = priorState.smoothedRate[kind] ?? 0
+            let priorPeak = priorState.peakRate[kind] ?? 0
             var smoothed: Double
+            // A session peak may only capture honest live readings: deltas measured over short gaps.
+            // The display EMA still averages a long gap (the warm background carry, a wake from sleep)
+            // into a truthful recent rate, but peaks come from a SEPARATE peak-only EMA that integrates
+            // exclusively short-gap measurements and resets whenever a long gap breaks the chain —
+            // otherwise the long-gap average would carry in the display EMA and the next short tick
+            // could promote its residue to a peak no short window ever measured.
+            var peakSmoothed = priorState.peakSmoothed[kind] ?? 0
             if let previous, current.timestamp.timeIntervalSince(previous.timestamp) > 0 {
                 let elapsed = current.timestamp.timeIntervalSince(previous.timestamp)
                 let d = max(0, delta(current: current, previous: previous, kinds: kind.rateKinds))
                 let perUnit = kind.isPerSecond ? elapsed : elapsed / 60.0
                 let raw = Double(d) / perUnit
                 smoothed = emaAlpha * raw + (1 - emaAlpha) * priorSmoothed
+                peakSmoothed = elapsed <= peakMaxElapsed
+                    ? emaAlpha * raw + (1 - emaAlpha) * peakSmoothed
+                    : 0
             } else {
                 smoothed = priorSmoothed
             }
@@ -293,9 +319,10 @@ public struct MeterBridge: Equatable, Sendable {
             // threshold so an idle channel actually reads zero instead of decaying forever.
             if smoothed < kind.livenessThreshold * 0.25 { smoothed = 0 }
 
-            let peak = max(priorState.peakRate[kind] ?? 0, smoothed)
+            let peak = max(priorPeak, peakSmoothed)
             smoothedOut[kind] = smoothed
             peakOut[kind] = peak
+            peakSmoothedOut[kind] = peakSmoothed
             let peakPosition = peak > 0 ? min(1.0, peak / denominator) : nil
 
             channels.append(MeterChannel(
@@ -314,7 +341,8 @@ public struct MeterBridge: Equatable, Sendable {
         }
 
         return MeterBridge(channels: channels,
-                           state: MeterState(smoothedRate: smoothedOut, peakRate: peakOut))
+                           state: MeterState(smoothedRate: smoothedOut, peakRate: peakOut,
+                                             peakSmoothed: peakSmoothedOut))
     }
 
     // MARK: - Internals

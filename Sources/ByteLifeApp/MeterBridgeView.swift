@@ -11,8 +11,14 @@ import ByteLifeCore
 struct MeterBridgeView: View {
     @ObservedObject var viewModel: DashboardViewModel
     @Environment(\.colorScheme) private var scheme
+    /// The persisted LIVE toggle. On, the deck behaves as before (live lights gate on each channel's
+    /// threshold). Off, the readouts show the numbers as of the last open and must not pretend to be
+    /// live: they render dim, without glow or pulse, regardless of `isLive`.
+    @AppStorage("liveMode") private var liveMode = true
 
     private var bridge: MeterBridge { viewModel.meterBridge }
+    /// Whether the given channel should render as live: it clears its threshold AND live mode is on.
+    private func showsLive(_ channel: MeterChannel) -> Bool { liveMode && channel.isLive }
     /// The glow-softening factor for the current scheme, applied to every shadow opacity.
     private var glow: Double { LatticePalette.glow(scheme) }
     private func channel(_ kind: MeterChannelKind) -> MeterChannel? {
@@ -61,23 +67,38 @@ struct MeterBridgeView: View {
         }
     }
 
+    /// The LIVE chip is now a control. In live mode it lights amber only while some channel clears its
+    /// threshold (today's behavior); with live mode off it renders as a dim outlined OFF state, since the
+    /// readouts are as of open and nothing is ticking. Tapping toggles live mode and hands the value to
+    /// the view model, which starts or stops the fast timer.
     private var liveChip: some View {
-        // The chip keeps an amber fill when live in both schemes; its text is the dark chassis ink,
-        // which reads legibly on amber in either appearance.
-        Text("LIVE")
-            .font(.system(size: 9, design: .monospaced).weight(.bold))
-            .foregroundStyle(bridge.anyLive ? LatticePalette.chassis(.dark) : LatticePalette.dim(scheme))
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(bridge.anyLive ? LatticePalette.amber(scheme) : LatticePalette.card(scheme))
-            )
-            .shadow(color: bridge.anyLive ? LatticePalette.amber(scheme).opacity(0.5 * glow) : .clear, radius: 4)
+        let lit = liveMode && bridge.anyLive
+        return Button {
+            liveMode.toggle()
+            viewModel.setLiveMode(liveMode)
+        } label: {
+            Text("LIVE")
+                .font(.system(size: 9, design: .monospaced).weight(.bold))
+                .foregroundStyle(lit ? LatticePalette.chassis(.dark) : LatticePalette.dim(scheme))
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(lit ? LatticePalette.amber(scheme) : LatticePalette.card(scheme))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 3)
+                                .stroke(liveMode ? Color.clear : LatticePalette.dim(scheme).opacity(0.5),
+                                        lineWidth: 1)
+                        )
+                )
+                .shadow(color: lit ? LatticePalette.amber(scheme).opacity(0.5 * glow) : .clear, radius: 4)
+        }
+        .buttonStyle(.plain)
     }
 
     private var combinedFlowLine: some View {
-        let byteChannelsLive = (channel(.traffic)?.isLive ?? false) || (channel(.storage)?.isLive ?? false)
+        let byteChannelsLive = liveMode
+            && ((channel(.traffic)?.isLive ?? false) || (channel(.storage)?.isLive ?? false))
         return Text("▲ \(ByteFormatting.byteRate(bridge.combinedByteRate))")
             .font(.system(.caption, design: .monospaced).weight(.medium))
             .monospacedDigit()
@@ -152,19 +173,22 @@ struct MeterBridgeView: View {
 
     private func rateCard(_ channel: MeterChannel) -> some View {
         let color = LatticePalette.channel(channel.kind, scheme)
+        // With live mode off the readout is as of the last open, so it drops its glow and pulse and reads
+        // dim, regardless of the channel's own liveness.
+        let live = showsLive(channel)
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text(channel.title)
                     .font(.system(.caption2, design: .monospaced).weight(.semibold))
                     .foregroundStyle(color.opacity(0.85))
-                if channel.isLive { PulseDot(color: color, glow: glow) }
+                if live { PulseDot(color: color, glow: glow) }
                 Spacer()
                 Text(channel.rateReadout)
                     .font(.system(.caption, design: .monospaced).weight(.semibold))
                     .monospacedDigit()
                     .contentTransition(.numericText(countsDown: false))
-                    .foregroundStyle(channel.isLive ? color : LatticePalette.dim(scheme))
-                    .shadow(color: channel.isLive ? color.opacity(0.45 * glow) : .clear, radius: 3)
+                    .foregroundStyle(live ? color : LatticePalette.dim(scheme))
+                    .shadow(color: live ? color.opacity(0.45 * glow) : .clear, radius: 3)
             }
 
             sparkline(channel, color: color)

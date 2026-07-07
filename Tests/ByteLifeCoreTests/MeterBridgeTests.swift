@@ -182,6 +182,84 @@ final class MeterBridgeTests: XCTestCase {
         XCTAssertGreaterThan(idle.peakPosition!, busy.peakPosition!)
     }
 
+    // MARK: - Peak gap-gating
+
+    func testShortGapRaisesBothRateAndPeak() {
+        // A 2-second gap is an honest live poll: 200,000 bytes over 2s = 100,000 B/s raw, a first EMA
+        // step from 0 halves it to 50,000, and the session peak rises to meet it.
+        let bridge = build(
+            current: snap([.networkBytesIn: 200_000], at: t0.addingTimeInterval(2)),
+            previous: snap([.networkBytesIn: 0], at: t0)
+        )
+        let traffic = channel(bridge, .traffic)
+        XCTAssertEqual(traffic.rate, 50_000, accuracy: 0.001)
+        XCTAssertEqual(traffic.peak, 50_000, accuracy: 0.001)
+    }
+
+    func testLongGapRaisesRateButNotPeak() {
+        // A 30-second gap is the warm background carry, not a live poll. 3,000,000 bytes over 30s is
+        // still 100,000 B/s raw and an honest recent average, so the smoothed rate climbs; but the gap
+        // average must never forge a peak, so the prior peak carries through unchanged.
+        let prior = MeterState(smoothedRate: [.traffic: 0], peakRate: [.traffic: 1_000])
+        let bridge = build(
+            current: snap([.networkBytesIn: 3_000_000], at: t0.addingTimeInterval(30)),
+            previous: snap([.networkBytesIn: 0], at: t0),
+            priorState: prior
+        )
+        let traffic = channel(bridge, .traffic)
+        XCTAssertEqual(traffic.rate, 50_000, accuracy: 0.001)
+        XCTAssertEqual(traffic.peak, 1_000, accuracy: 0.001)
+    }
+
+    func testLongGapResidueCannotLaunderIntoAPeakThroughTheEMACarry() {
+        // The review's laundering scenario: a 30s background carry at 200,000 B/s raw leaves the display
+        // EMA at 100,000 (honest recent average, peak gated). The NEXT short tick sees zero bytes; the
+        // display EMA halves to 50,000 — but that residue is the long gap's average, and it must not be
+        // promoted to a peak by the now-short gap. The peak-only EMA reset on the long gap, so the peak
+        // stays where honest short-gap measurements left it.
+        let gapStep = build(
+            current: snap([.networkBytesIn: 6_000_000], at: t0.addingTimeInterval(30)),
+            previous: snap([.networkBytesIn: 0], at: t0),
+            priorState: .initial
+        )
+        XCTAssertEqual(channel(gapStep, .traffic).rate, 100_000, accuracy: 0.001)
+        XCTAssertEqual(channel(gapStep, .traffic).peak, 0, accuracy: 0.001)
+
+        let shortStep = build(
+            current: snap([.networkBytesIn: 6_000_000], at: t0.addingTimeInterval(32)),
+            previous: snap([.networkBytesIn: 6_000_000], at: t0.addingTimeInterval(30)),
+            priorState: gapStep.state
+        )
+        let traffic = channel(shortStep, .traffic)
+        XCTAssertEqual(traffic.rate, 50_000, accuracy: 0.001)
+        XCTAssertEqual(traffic.peak, 0, accuracy: 0.001)
+
+        // Once real short-gap measurements arrive, the peak-only EMA rebuilds from zero: two 2s ticks at
+        // 100,000 B/s raw reach 75,000, and that (not the stale carry) is the recorded peak.
+        let live1 = build(
+            current: snap([.networkBytesIn: 6_200_000], at: t0.addingTimeInterval(34)),
+            previous: snap([.networkBytesIn: 6_000_000], at: t0.addingTimeInterval(32)),
+            priorState: shortStep.state
+        )
+        let live2 = build(
+            current: snap([.networkBytesIn: 6_400_000], at: t0.addingTimeInterval(36)),
+            previous: snap([.networkBytesIn: 6_200_000], at: t0.addingTimeInterval(34)),
+            priorState: live1.state
+        )
+        XCTAssertEqual(channel(live2, .traffic).peak, 75_000, accuracy: 0.001)
+    }
+
+    func testTenSecondGapStillCountsAsAnHonestPeak() {
+        // The gate is inclusive at the ten-second boundary: a delta measured over exactly ten seconds is
+        // still a live reading, so it may hold a peak. 1,000,000 bytes over 10s = 100,000 B/s raw, a
+        // first EMA step halves it to 50,000.
+        let bridge = build(
+            current: snap([.networkBytesIn: 1_000_000], at: t0.addingTimeInterval(10)),
+            previous: snap([.networkBytesIn: 0], at: t0)
+        )
+        XCTAssertEqual(channel(bridge, .traffic).peak, 50_000, accuracy: 0.001)
+    }
+
     // MARK: - Availability tags
 
     func testAvailabilityTagMapping() {
