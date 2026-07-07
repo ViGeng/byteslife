@@ -10,10 +10,11 @@ ByteLife installs from the public Homebrew tap (the source repo itself is curren
 
 ```
 brew tap vigeng/tap
+brew trust vigeng/tap   # only needed when HOMEBREW_REQUIRE_TAP_TRUST is set
 brew install --cask bytelife
 ```
 
-The app is ad-hoc signed and not notarized; the cask clears the quarantine flag on install. `scripts/release.sh` publishes a new version end to end (build, zip, GitHub release on the tap, cask update).
+Newer Homebrew configurations gate third-party taps behind an explicit, user-side `brew trust`; there is deliberately no way for a tap author to pre-trust themselves, so the line stays in the instructions. The app is ad-hoc signed and not notarized; the cask clears the quarantine flag on install. `scripts/release.sh` publishes a new version end to end (build, zip, GitHub release on the tap, cask update).
 
 ## Premise
 

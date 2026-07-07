@@ -32,7 +32,9 @@ echo "==> Creating release $TAG on $TAP_REPO"
 gh release create "$TAG" "$ZIP" \
     --repo "$TAP_REPO" \
     --title "ByteLife $VERSION" \
-    --notes "ByteLife $VERSION — menu bar dashboard tracking your digital life in bytes. Ad-hoc signed build; the cask clears quarantine on install."
+    --notes "ByteLife $VERSION — menu bar dashboard tracking your digital life in bytes. Ad-hoc signed build; the cask clears quarantine on install.
+
+Install: \`brew tap vigeng/tap && brew install --cask bytelife\` (if your Homebrew sets HOMEBREW_REQUIRE_TAP_TRUST, run \`brew trust vigeng/tap\` once after tapping)."
 
 echo "==> Writing Casks/bytelife.rb"
 CASK=$(cat <<CASK_EOF
@@ -70,3 +72,4 @@ gh api -X PUT "repos/$TAP_REPO/contents/Casks/bytelife.rb" \
     ${EXISTING_SHA:+-f sha="$EXISTING_SHA"} > /dev/null
 
 echo "==> Done: brew tap vigeng/tap && brew install --cask bytelife"
+echo "    (Homebrew with HOMEBREW_REQUIRE_TAP_TRUST set also needs a one-time: brew trust vigeng/tap)"
