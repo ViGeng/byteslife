@@ -1,123 +1,86 @@
-# ByteLife (working title)
+<h1 align="center">ByteLife</h1>
 
-ByteLife is a native macOS app that tracks the digital side of a person's existence, centered on the concept of bytes. It aggregates AI token usage, network traffic, disk activity, screen time, and physical input into one dashboard of digital life.
+<p align="center">A native macOS menu bar app that tracks your digital life in bytes:<br>AI tokens, network, disk, screen time, and input, all under one roof.</p>
 
-Version 0.8.1 is implemented and running (a stabilization release: 0.8.0's Bluetooth collector tripped a TCC privacy kill that crashed the app within a minute, the permission flow blocked the main thread, and launch start-up did too; all three are fixed, and Bluetooth counting now stays dormant behind an authorization gate until an explicit enable affordance ships). The menubar shows today's running balance, and the dropdown is the Byte Flow deck: a chart-led live dashboard that adapts to the system appearance, opens fully formed with warm live rates, carries a LIVE toggle, and offers per-channel chart windows from 30 minutes to 24 hours plus a user-set WORK window (1 to 48 hours). COGNITION reads three AI sources — Claude Code, Codex CLI, and Gemini CLI — with an honest "N of M sources reporting" disclosure, and schema v4 records per-model and per-session token stats, surfaced as a BY MODEL breakdown with session memos in the Back Office. Energy is measured at the wall through the SMC system-power key (the battery-only path read zero on AC), and a sensor deck of eight auxiliary collectors books lid opens, wakes and boots, audio switches, Bluetooth connects, volume changes, and per-minute temperature, fan, charge, ambient-light, brightness, and power curves, every one degrading to an honest source-missing state where the hardware is absent. A shell-history collector counts terminal commands without ever reading command text. Input-permission recovery lives in the app: the grant flow detects macOS's suppressed once-per-identity prompt and offers a per-user permission reset that makes the prompt genuinely fire. The Ledger remains the record layer: the Back Office day story gains a SENSORS section of muted curves, and receipts book commands, lid opens, and wakes in the AUXILIARY section. The concept brief below and the research under docs/ remain the design ground truth.
+<p align="center">
+  <img src="docs/screenshots/panel-flow.png" width="360" alt="The ByteLife menu bar panel, a live Byte Flow dashboard">
+</p>
 
-## Installing
+ByteLife lives in your menu bar and keeps a running account of the digital side of your day. Click the icon and the **Byte Flow** deck drops down: a live, chart-led dashboard of five channels updating in real time. Behind it sits a double-entry **Ledger** that records each day, lets you close the books, and prints a shareable receipt. Everything is measured locally, and the app records counts, never contents.
 
-ByteLife installs from the public Homebrew tap (the source repo itself is currently private; release zips are published on the tap):
+## Install
 
-```
+```sh
 brew tap vigeng/tap
-brew trust vigeng/tap   # only needed when HOMEBREW_REQUIRE_TAP_TRUST is set
 brew install --cask bytelife
 ```
 
-Newer Homebrew configurations gate third-party taps behind an explicit, user-side `brew trust`; there is deliberately no way for a tap author to pre-trust themselves, so the line stays in the instructions. The app is ad-hoc signed and not notarized; the cask clears the quarantine flag on install. `scripts/release.sh` publishes a new version end to end (build, zip, GitHub release on the tap, cask update).
+That is the whole thing. The cask clears the Gatekeeper quarantine on install, so the app opens straight away. ByteLife is ad-hoc signed and not notarized (it is a personal project, not a paid Developer ID build), so if your Homebrew has `HOMEBREW_REQUIRE_TAP_TRUST` set, run `brew trust vigeng/tap` once after tapping.
 
-## Premise
+Prefer to download the zip from [Releases](https://github.com/ViGeng/byteslife/releases) by hand? Remove the quarantine attribute yourself afterward:
 
-We are carbon-based lifeforms, but our digital existence has become vital. ByteLife measures that existence through five metric families:
+```sh
+xattr -cr /Applications/ByteLife.app
+```
 
-- AI usage counts the tokens consumed and generated across the user's AI tools.
-- Network activity counts the total bytes sent and received.
-- Disk activity counts the total bytes read and written.
-- Screen time counts the hours spent in front of an awake display.
-- Input counts total keystrokes and cumulative mouse travel distance.
+Requires macOS 14 (Sonoma) or newer. It runs as a menu bar item with no Dock icon.
 
-## Why this app can exist (landscape, July 2026)
+## What it tracks
 
-A market scan found that no existing tool unifies AI token tracking with system-level byte metrics. The AI usage trackers, such as Tokens 4 Breakfast and ccusage, cover only tokens. The system monitors, such as iStat Menus and the open-source Stats app, are live-only and AI-blind. WhatPulse is the closest analog for input and network tracking, but it has no disk history, no AI awareness, and no native Mac feel. The pricing norm in this niche is a one-time purchase between roughly 8 and 20 dollars, and subscription fatigue is a documented reason users abandon utilities of this size.
+Five core families, each reported in or alongside literal byte counts:
 
-ByteLife's defensible position is the single-currency framing: every metric family is reported in or alongside literal byte counts, under one conceptual frame, in a native Swift app. Details live in [docs/research/landscape.md](docs/research/landscape.md).
+- **Traffic** — network bytes sent and received.
+- **Storage** — disk bytes written and read.
+- **Cognition** — AI tokens prompted and generated, read from local Claude Code, Codex CLI, and Gemini CLI logs, broken down by model and session.
+- **Exposure** — time spent in front of an awake display.
+- **Mechanics** — keystrokes, clicks, scrolls, and cumulative mouse travel.
 
-## Creative direction (recommended): the Ledger
+Plus a deck of auxiliary accounts kept *also on the books*: energy drawn (measured at the wall via the SMC), the app you focus on most, files touched (counts only, never paths), distinct hosts contacted (salted hashes only, never names), terminal commands run, and a sensor deck of lid opens, wakes, thermals, battery, ambient light, brightness, and audio. Every source that is absent on your machine degrades to an honest "not reporting" state rather than a broken panel.
 
-Five directions were developed and scored by a three-judge panel on desirability, conceptual honesty, and buildability. The Ledger ("Double-Entry Self") won overall because it never scored below 8 on any lens. Full concept sheets are in [docs/research/concepts.md](docs/research/concepts.md) and the scoring is in [docs/research/judges.md](docs/research/judges.md).
+## Two surfaces
 
-The Ledger treats your digital life as a small estate and installs you as its accountant. The frame is honest rather than decorative, because three of the five families really are paired directional flows. Network traffic pairs bytes sent against bytes received, disk activity pairs writes against reads, and AI usage pairs tokens prompted against tokens generated, so debit and credit columns are the data's native shape. Screen time and input do not pair, and the design books them frankly as expense accounts named Hours Under the Lamp and the Labor Account instead of faking a balance.
+The **panel** is the live view. It opens fully formed with warm rates, animates figures as they climb, carries a LIVE toggle, and lets each channel pick its own chart window from 30 minutes up to 24 hours (or a custom work window). The hero number is the day's posted byte volume; the channels below it each show a live rate, a sparkline, a peak mark, and the day's directional totals.
 
-The core habit loop is Reconciliation. At the end of each day the user closes the books with one click. The app freezes the period, prints a receipt-styled summary of the five accounts, adds one dry margin comment, and stamps the day BALANCED in brass gold. Reconciled days become immutable and accumulate into a browsable, auditable history of the user's digital life.
+The **General Ledger** is the record. It treats your digital life as a small estate and installs you as its accountant: paired flows book as debits and credits, screen time and input book frankly as expense accounts, and each day can be *reconciled* with one click into an immutable, hash-stamped receipt you can save as a PDF or image. Browse by day, week, or month, with an all-time trial balance in the corner.
 
-The voice is a competent, faintly weary bookkeeper with dry wit and no moralizing. The visual language is ledger paper and ink: IBM Plex Mono for figures with tabular numerals, oxblood red debits, muted ledger-green credits, and a single brass-gold accent reserved for the balanced stamp.
+![The General Ledger window, showing a day's accounts, charts, and history](docs/screenshots/general-ledger.png)
 
-The following ideas are grafted in from the losing directions:
+## Privacy
 
-- The daily Dispatch from the Almanac direction adds one composed observation per day that names a non-obvious relationship, for example that you generated more words with machines than you typed by hand for the first time this week.
-- Per-account calibration from the Instrument direction lets the user set a personal normal range so heavy and light users both get expressive readings.
-- The "accounts not yet opened" and "partial: 1 of N sources reporting" states handle missing data sources as honest disclosure rather than broken UI.
-- The generated-to-prompted token ratio from the Digital Metabolism direction is surfaced as the one AI metric that carries genuine self-knowledge.
-- A tamper-evident content hash on each daily receipt makes the privacy promise verifiable rather than merely stated.
-- The year-end Annual Report compiles the daily closes into a bound, PDF-exportable keepsake.
+ByteLife is local-first and records **counts, never contents**.
 
-The runner-up directions remain documented. Symbiont, a living cell that metabolizes your bytes, scored highest on shareability but is a multi-month graphics project. The Instrument, a precision bench meter, is the most buildable alternative but risks being admired for a week and then ignored.
+- There is no network client in the app, so there is nothing to phone home with. You are welcome to confirm that with Little Snitch.
+- Data lives only in `~/Library/Application Support/ByteLife/bytelife.sqlite` on your Mac.
+- Keystrokes are counted and their key codes discarded; the event tap never sees what you type in password fields by OS design. Hostnames and Bluetooth peripheral names are stored only as salted, non-reversible hashes. File and command activity is counted, never read.
+- The app never issues a productivity score or judgment. It reports raw numbers and leaves the meaning to you.
 
-## Feasibility summary (macOS 14+)
+## Permissions
 
-| Family | v1 data source | Permission |
-| --- | --- | --- |
-| AI tokens | Parse Claude Code JSONL transcripts and Codex CLI session logs locally | None outside the sandbox |
-| Network | sysctl NET_RT_IFLIST2 64-bit interface counters | None |
-| Disk | IOKit IOBlockStorageDriver statistics, plus proc_pid_rusage per process | None |
-| Screen time | Idle-time checks plus NSWorkspace sleep, wake, and lock notifications | None |
-| Input | Listen-only CGEventTap that increments counters and discards key codes | Input Monitoring |
+Only **Input Monitoring** ever prompts, and only when you choose to light up the Mechanics channel from the panel; ByteLife never raises the prompt on its own. Everything else either needs no permission or degrades honestly when a source is unavailable. Bluetooth counting stays dormant behind an authorization gate until a future release adds an explicit opt-in.
 
-The key facts from the research, detailed in [docs/research/feasibility.md](docs/research/feasibility.md), are these:
+## Building from source
 
-- Only input tracking requires a permission prompt, and the app should request Input Monitoring rather than the broader Accessibility permission.
-- AI tokens have no OS API. The Anthropic and OpenAI usage APIs are confirmed unavailable to individual accounts, so local log parsing is the only viable path for most users. Claude Code transcripts need deduplication because duplicate usage lines were observed empirically. Cursor and GitHub Copilot cannot provide token counts at all, and Ollama keeps no logs, so it would need a local loopback proxy.
-- Distribution should start with Developer ID plus notarization. The Mac App Store is possible later, but it adds folder-grant friction for reading log directories and carries real review risk around keystroke counting under guideline 2.4.5(v).
-- Secure Input means typing in password fields is never observable, by OS design, so keystroke counts will slightly undercount.
-- All five collectors are cheap. File watching is event-driven, the counters are single syscalls polled every few seconds, and the event tap does microseconds of work per event.
+Needs macOS 14+ and a Swift 6 toolchain.
 
-## Design principles
+```sh
+swift build           # build the package
+swift test            # run the core test suite (386 tests)
+./scripts/package-app.sh   # assemble an ad-hoc-signed dist/ByteLife.app
+```
 
-- The app is local-first and records counts, never contents. Version 1 ships without any network client so there is nothing to phone home with, and users are invited to verify that with Little Snitch.
-- The voice stays neutral. The app reports raw counts and never issues a productivity score, because judgment is a documented abandonment driver.
-- Each day leads with one clear number to avoid dashboard overload.
-- Missing sources degrade gracefully into visible, honest states instead of empty panels.
-- If commercialized, pricing follows the one-time-purchase norm of the niche.
+The architecture is a small core plus per-metric collectors: one resident menu bar process hosts in-process Swift collector modules behind a shared protocol, each with its own availability state, all writing normalized samples into a local SQLite store with minute and daily rollups. All the logic lives in `Sources/ByteLifeCore/` and is covered by tests; `Sources/ByteLifeApp/` is a thin SwiftUI shell.
 
-## Version 1 scope
+`scripts/release.sh` publishes a version end to end: it builds, zips, cuts a GitHub release on this repo, and updates the cask in [vigeng/homebrew-tap](https://github.com/ViGeng/homebrew-tap).
 
-- A menubar extra shows today's running balance and drops down the live five-channel view. (Implemented as the Byte Flow dashboard, with live rates, charts, and rolling figures while the panel is open.)
-- A General Ledger window holds the posted history and the trial balance. (Implemented.)
-- The nightly Reconcile ritual produces the daily receipt. (Implemented: BALANCED in brass, FLAGGED with the short accounts named, or POSTED IN ARREARS for a past day closed late.) The weekly Statement is not yet built.
-- Data collectors cover the five families listed in the feasibility table. (Implemented.)
-- Version 1 deliberately omits cloud sync, accounts, goals, streaks, social features, per-app network attribution, and any iOS companion.
+## Design and background
 
-## Beyond one Mac (designed, not yet built)
+The Ledger framing is not decorative. Three of the five families really are paired directional flows (traffic pairs sent against received, storage writes against reads, AI prompted against generated), so debit and credit columns are the data's native shape; the two that do not pair are booked frankly as expense accounts instead of faking a balance. The voice is a competent, faintly weary bookkeeper with dry wit and no moralizing.
 
-[docs/design/multi-device.md](docs/design/multi-device.md) records the multi-device direction: every machine is a holding with a stable identity, device-own metrics merge additively across holdings, shared sources attribute to the source rather than the observer, and remote servers are collected agentlessly over existing SSH access with nothing installed on the remote side.
+- [PLAN.md](PLAN.md) — the living implementation plan, with each iteration's decisions and post-execution notes.
+- [CHANGELOG.md](CHANGELOG.md) — the append-only iteration log.
+- [docs/design/](docs/design/) — forward-looking design notes, including the multi-device holdings model and agentless SSH collection of remote servers.
+- [docs/research/](docs/research/) — the concept exploration behind the Ledger direction: a market landscape scan, a macOS feasibility study, five concept sheets, and the judge panel that scored them.
 
-## Building and running
+## Status
 
-The package needs macOS 14+ and a Swift 6 toolchain. `swift build` and `swift test` cover the core library (81 tests). `scripts/package-app.sh` produces an ad-hoc-signed `dist/ByteLife.app` that lives in the menubar with no Dock icon.
-
-On first launch, four collectors run immediately with no permission prompts. Input counting stays in a visible "needs permission" state until Input Monitoring is granted from the panel, because the app never raises the prompt on its own. The AI collector backfills token history from existing Claude Code transcripts under `~/.claude/projects` into the correct historical days, deduplicated by the `(sessionId, message.id, requestId)` key. Data lands in `~/Library/Application Support/ByteLife/bytelife.sqlite`.
-
-## Repository layout
-
-- [README.md](README.md) holds the current concept brief and project state, updated each iteration.
-- [PLAN.md](PLAN.md) is the v1 scaffold plan, now executed, with post-execution deviations recorded in its status section.
-- [CHANGELOG.md](CHANGELOG.md) is the append-only iteration log.
-- [Sources/ByteLifeCore/](Sources/ByteLifeCore/) is the library with all logic: the model layer, the SQLite store, the collector framework, and the five collectors.
-- [Sources/ByteLifeApp/](Sources/ByteLifeApp/) is the thin menubar app shell.
-- [Tests/ByteLifeCoreTests/](Tests/ByteLifeCoreTests/) holds the test suite and the hand-authored transcript fixtures.
-- [scripts/package-app.sh](scripts/package-app.sh) assembles and ad-hoc-signs `dist/ByteLife.app`.
-- [docs/design/](docs/design/) holds forward design notes, currently the multi-device and remote-source design.
-- [docs/research/](docs/research/) holds the raw output of the 2026-07-04 concept workflow: feasibility research, the landscape scan, the five concept sheets, and the judge panel results.
-
-## Decisions so far (2026-07-04)
-
-- Version 1 is a menubar-first app: a status item whose click opens a panel with the day's statistics.
-- Distribution is Developer ID with notarization, outside the Mac App Store.
-- The architecture is a core plus per-metric collectors: one resident menubar process hosting in-process Swift collector modules behind a shared protocol, each with its own availability state (running, permission denied, or source missing), all writing normalized samples into a local SQLite store with hourly and daily rollups. The AI collector internally hosts per-tool source adapters (Claude Code first, then Codex, later an optional Ollama loopback proxy). A data-level ingestion point for external scripts is deferred to v1.1, and no dynamic plugin loader is planned until there is demand.
-
-## Open questions
-
-- The final app name. Current candidates in the Ledger direction include Reconcile, Bytekeeping, Nightaudit, and The Standing Ledger, with ByteLife still viable as the umbrella brand.
-- Whether version 1 targets personal use or a public release from day one.
-
-The creative direction question is settled: the Ledger was committed to and applied in iteration 3.
+ByteLife is at version 0.8.1 and actively developed. Traffic, storage, cognition, exposure, and mechanics all collect and render; the Ledger, reconcile ritual, receipts, and General Ledger window are in place. On the roadmap: notional AI dollar cost at list prices, a composite "how busy was today" index, git and calendar activity, and multi-device support. It has no cloud sync, accounts, goals, streaks, or telemetry, by design.

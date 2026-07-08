@@ -281,7 +281,7 @@ Founder halt, evening of 2026-07-07: feature iterations paused after 0.8.0 crash
 The order, each step gated on the previous ship:
 
 1. Iteration 9 (shipped 2026-07-07, 0.8.0): sensors, true energy, permission self-recovery, fine-grained AI (schema v4), the WORK window, shell commands.
-1a. Stabilization (0.8.1, executed the same evening): the Bluetooth TCC kill, the beachballing permission flow, and the blocking launch — see "Stabilization" below.
+1a. Stabilization (0.8.1, executed the same evening): the Bluetooth TCC kill, the beachballing permission flow, and the blocking launch — see "Stabilization" below. On 2026-07-08 the repo went public, the Homebrew tap moved to the conventional layout (releases on byteslife itself, the cask points there, the old private-repo hosting hack retired), and 0.8.1 shipped to the tap with a public-facing README.
 2. Iteration 10 (0.9.0, honest numbers, no migration): the realtime token meter, the notional AI cost, and the Composite. All three only read what v4 already records, so this is the highest founder-visible value per line changed.
 3. Iteration 11 (0.10.0, the deeper record, schema v5): the Workshop (git) and the Journal in one migration, plus the working-hours strip as the first journal-powered insight.
 4. Iteration 12 (0.11.0, beyond the machine, schema v6): the Engagement Book (calendar) before the Correspondence account (email), ordered by permission friction.

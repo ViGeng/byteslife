@@ -1,22 +1,25 @@
 #!/bin/bash
-# Publishes a ByteLife release to the Homebrew tap so anyone can install it with
+# Publishes a ByteLife release so anyone can install it with
 #   brew tap vigeng/tap && brew install --cask bytelife
 #
 # The flow: build and package the app, zip it with ditto (preserves the bundle exactly), create a
-# GitHub release on the PUBLIC tap repo carrying the zip (the byteslife source repo is private, so
-# its release assets would not be publicly downloadable), then write Casks/bytelife.rb into the tap
-# pointing at that asset with the fresh sha256. The cask follows the tap's house style: an
-# `xattr -cr` postflight clears the quarantine flag, since the app is ad-hoc signed and not
-# notarized. Re-running for an already-published version fails at release creation by design; bump
-# the version in package-app.sh first.
+# GitHub release on the byteslife repo itself carrying the zip, then update Casks/bytelife.rb in the
+# public homebrew-tap to point at that asset with the fresh sha256. Because byteslife is a public
+# repo, its release assets download publicly, so the release lives on the app's own repo (the
+# conventional layout) rather than being smuggled onto the tap. The tap only carries the cask.
+#
+# The cask clears the Gatekeeper quarantine with an `xattr -cr` postflight, since the app is ad-hoc
+# signed and not notarized. Re-running for an already-published version fails at release creation by
+# design; bump the version in package-app.sh first.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+SOURCE_REPO="ViGeng/byteslife"
 TAP_REPO="ViGeng/homebrew-tap"
 
 VERSION=$(awk '/CFBundleShortVersionString/{getline; gsub(/.*<string>|<\/string>.*/,""); print; exit}' scripts/package-app.sh)
 [ -n "$VERSION" ] || { echo "error: could not read version from scripts/package-app.sh" >&2; exit 1; }
-TAG="bytelife-v$VERSION"
+TAG="v$VERSION"
 ZIP="dist/ByteLife-$VERSION.zip"
 
 echo "==> Packaging ByteLife $VERSION"
@@ -28,23 +31,28 @@ ditto -c -k --keepParent dist/ByteLife.app "$ZIP"
 SHA=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)
 echo "    sha256 $SHA"
 
-echo "==> Creating release $TAG on $TAP_REPO"
+echo "==> Creating release $TAG on $SOURCE_REPO"
 gh release create "$TAG" "$ZIP" \
-    --repo "$TAP_REPO" \
+    --repo "$SOURCE_REPO" \
     --title "ByteLife $VERSION" \
-    --notes "ByteLife $VERSION — menu bar dashboard tracking your digital life in bytes.
+    --notes "ByteLife $VERSION — a menu bar dashboard that tracks your digital life in bytes.
 
-Install: \`brew tap vigeng/tap && brew install --cask bytelife\` (if your Homebrew sets HOMEBREW_REQUIRE_TAP_TRUST, run \`brew trust vigeng/tap\` once after tapping). The cask clears the Gatekeeper quarantine automatically.
+Install:
+\`\`\`
+brew tap vigeng/tap
+brew install --cask bytelife
+\`\`\`
+The cask clears the Gatekeeper quarantine automatically. If your Homebrew sets \`HOMEBREW_REQUIRE_TAP_TRUST\`, run \`brew trust vigeng/tap\` once after tapping.
 
-Important for direct downloads: the app is ad-hoc signed and not notarized, so if you install from this zip by hand you must remove the quarantine attribute yourself: \`xattr -cr /Applications/ByteLife.app\`."
+Installing the zip by hand instead? The app is ad-hoc signed and not notarized, so remove the quarantine attribute yourself: \`xattr -cr /Applications/ByteLife.app\`."
 
-echo "==> Writing Casks/bytelife.rb"
+echo "==> Writing Casks/bytelife.rb in $TAP_REPO"
 CASK=$(cat <<CASK_EOF
 cask "bytelife" do
   version "$VERSION"
   sha256 "$SHA"
 
-  url "https://github.com/ViGeng/homebrew-tap/releases/download/bytelife-v#{version}/ByteLife-#{version}.zip"
+  url "https://github.com/ViGeng/byteslife/releases/download/v#{version}/ByteLife-#{version}.zip"
   name "ByteLife"
   desc "Menu bar dashboard tracking your digital life in bytes"
   homepage "https://github.com/ViGeng/byteslife"
@@ -74,4 +82,3 @@ gh api -X PUT "repos/$TAP_REPO/contents/Casks/bytelife.rb" \
     ${EXISTING_SHA:+-f sha="$EXISTING_SHA"} > /dev/null
 
 echo "==> Done: brew tap vigeng/tap && brew install --cask bytelife"
-echo "    (Homebrew with HOMEBREW_REQUIRE_TAP_TRUST set also needs a one-time: brew trust vigeng/tap)"
