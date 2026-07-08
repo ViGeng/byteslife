@@ -84,3 +84,7 @@ The Ledger framing is not decorative. Three of the five families really are pair
 ## Status
 
 ByteLife is at version 0.8.1 and actively developed. Traffic, storage, cognition, exposure, and mechanics all collect and render; the Ledger, reconcile ritual, receipts, and General Ledger window are in place. On the roadmap: notional AI dollar cost at list prices, a composite "how busy was today" index, git and calendar activity, and multi-device support. It has no cloud sync, accounts, goals, streaks, or telemetry, by design.
+
+---
+
+<sub>ByteLife is written with the help of AI (Claude).</sub>
