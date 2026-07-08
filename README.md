@@ -8,6 +8,10 @@
 
 ByteLife lives in your menu bar and keeps a running account of the digital side of your day. Click the icon and the **Byte Flow** deck drops down: a live, chart-led dashboard of five channels updating in real time. Behind it sits a double-entry **Ledger** that records each day, lets you close the books, and prints a shareable receipt. Everything is measured locally, and the app records counts, never contents.
 
+## The idea
+
+Every day you exchange an enormous amount of information with the digital world: prompts and answers, packets up and down, reads and writes, hours of attention, thousands of keystrokes. ByteLife counts all of those digital footprints and reports them in a single currency, the byte. Seeing that daily volume in one place is a quiet way to sense how much you actually traded with the digital world today. Over time it reads as a rough proxy for the day's output, a productivity indicator you interpret for yourself rather than a score the app hands down.
+
 ## Install
 
 ```sh
