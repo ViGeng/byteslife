@@ -21,8 +21,7 @@ final class MeterBridgeTests: XCTestCase {
         series: [MetricKind: [Int64]] = [:],
         availability: [MetricFamily: Availability]? = nil,
         priorState: MeterState = .initial,
-        windows: [MeterChannelKind: MeterWindow] = [:],
-        heroWindow: MeterWindow = .default
+        windows: [MeterChannelKind: MeterWindow] = [:]
     ) -> MeterBridge {
         MeterBridge.build(
             current: current,
@@ -30,8 +29,7 @@ final class MeterBridgeTests: XCTestCase {
             series: series,
             availabilityByFamily: availability ?? running,
             priorState: priorState,
-            windows: windows,
-            heroWindow: heroWindow
+            windows: windows
         )
     }
 
@@ -798,29 +796,11 @@ final class MeterBridgeTests: XCTestCase {
         XCTAssertEqual(cognition.rawBars[29], 35, accuracy: 0.001)
     }
 
-    func testHeroSeriesUsesTheHeroWindowIndependentOfChannelWindows() {
-        // The hero flow chart carries its own window. With the TRAFFIC card at 30M but the hero at 1H, the
-        // hero traffic series buckets at 2 minutes while the card's rawBars bucket at 1.
-        var m = zeros(60)
-        m[58] = 120_000; m[59] = 120_000
-        let bridge = build(
-            current: snap([:], at: t0),
-            series: [.networkBytesIn: m, .networkBytesOut: zeros(60)],
-            windows: [.traffic: .w30m], heroWindow: .h1)
-        XCTAssertEqual(bridge.heroTraffic.count, 30)                        // 1H -> 30 buckets
-        XCTAssertEqual(bridge.heroTraffic[29], 2000, accuracy: 0.001)      // 240,000 / 120 s
-        XCTAssertEqual(bridge.heroStorage.count, 30)                       // paired, all zero here
-        XCTAssertTrue(bridge.heroStorage.allSatisfy { $0 == 0 })
-        // The TRAFFIC card meanwhile buckets the most recent 30 minutes at one-minute resolution.
-        XCTAssertEqual(channel(bridge, .traffic).rawBars.count, 30)
-    }
-
     func testDefaultWindowKeepsThirtyOneMinuteBuckets() {
-        // With no window map the build falls back to 30M for every channel and the hero, so a caller that
+        // With no window map the build falls back to 30M for every channel, so a caller that
         // never adjusts a window sees the shipped 30 one-minute buckets.
         let series: [MetricKind: [Int64]] = [.networkBytesIn: zeros(30), .networkBytesOut: zeros(30)]
         let bridge = build(current: snap([:], at: t0), series: series)
         XCTAssertEqual(channel(bridge, .traffic).rawBars.count, 30)
-        XCTAssertEqual(bridge.heroTraffic.count, 30)
     }
 }

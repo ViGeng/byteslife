@@ -178,9 +178,8 @@ public struct MeterChannel: Equatable, Sendable, Identifiable {
     public let needsPermission: Bool
     /// Recent minute buckets normalized to 0-1 against the window range with a floor, oldest first.
     public let bars: [Double]
-    /// The same minutes on the channel's absolute rate axis (bytes/s, tok/min, keys/min), oldest first.
-    /// Charts that must share one scale across channels (the hero flow chart) read these; `bars` stays
-    /// the per-channel floored shape.
+    /// The same minutes on the channel's absolute rate axis (bytes/s, tok/min, keys/min), oldest first;
+    /// `bars` stays the per-channel floored shape.
     public let rawBars: [Double]
     /// True when the smoothed rate is at or above the channel's liveness threshold. Every live-gated
     /// light reads this, never a raw nonzero test.
@@ -242,20 +241,10 @@ public struct MeterBridge: Equatable, Sendable {
     public let channels: [MeterChannel]
     /// The smoothing and peak-hold state to feed back into the next build.
     public let state: MeterState
-    /// TRAFFIC's rate-axis bucket values (bytes/s), oldest first, bucketed at the HERO window rather than
-    /// the TRAFFIC card's window. The hero flow chart carries its own window selector independent of the
-    /// channel cards, so it reads these instead of the TRAFFIC channel's `rawBars`.
-    public let heroTraffic: [Double]
-    /// STORAGE's rate-axis bucket values (bytes/s), oldest first, bucketed at the hero window, paired with
-    /// `heroTraffic` on the hero chart's one shared byte scale.
-    public let heroStorage: [Double]
 
-    public init(channels: [MeterChannel], state: MeterState,
-                heroTraffic: [Double] = [], heroStorage: [Double] = []) {
+    public init(channels: [MeterChannel], state: MeterState) {
         self.channels = channels
         self.state = state
-        self.heroTraffic = heroTraffic
-        self.heroStorage = heroStorage
     }
 
     /// True when any channel reads live: the panel's LIVE chip and combined-flow line light on this.
@@ -301,8 +290,6 @@ public struct MeterBridge: Equatable, Sendable {
     ///   stale grant keep the ordinary UNCALIBRATED tag.
     /// - Parameter windows: the per-channel history window. A channel absent from the map falls back to
     ///   the 30M default, so callers that never adjust a window keep the shipped 30 one-minute buckets.
-    /// - Parameter heroWindow: the window the hero flow chart buckets at, independent of the TRAFFIC and
-    ///   STORAGE cards; it drives `heroTraffic` and `heroStorage`.
     public static func build(
         current: MeterSnapshot,
         previous: MeterSnapshot?,
@@ -310,8 +297,7 @@ public struct MeterBridge: Equatable, Sendable {
         availabilityByFamily: [MetricFamily: Availability],
         priorState: MeterState,
         regrantFamilies: Set<MetricFamily> = [],
-        windows: [MeterChannelKind: MeterWindow] = [:],
-        heroWindow: MeterWindow = .default
+        windows: [MeterChannelKind: MeterWindow] = [:]
     ) -> MeterBridge {
         // The fetched minute history is oldest-first; each channel reads the most recent slice its own
         // window spans, so combine to the full fetched length and let the bucketizer take the tail.
@@ -414,19 +400,9 @@ public struct MeterBridge: Equatable, Sendable {
             ))
         }
 
-        // The hero flow chart carries its own window, so bucket TRAFFIC and STORAGE again at `heroWindow`
-        // rather than reusing their card channels, whose windows may differ.
-        let heroTraffic = rateAxisBuckets(
-            minutes: combine(series: series, kinds: MeterChannelKind.traffic.seriesKinds, length: seriesLength),
-            kind: .traffic, window: heroWindow)
-        let heroStorage = rateAxisBuckets(
-            minutes: combine(series: series, kinds: MeterChannelKind.storage.seriesKinds, length: seriesLength),
-            kind: .storage, window: heroWindow)
-
         return MeterBridge(channels: channels,
                            state: MeterState(smoothedRate: smoothedOut, peakRate: peakOut,
-                                             peakSmoothed: peakSmoothedOut, tokenTrail: trailOut),
-                           heroTraffic: heroTraffic, heroStorage: heroStorage)
+                                             peakSmoothed: peakSmoothedOut, tokenTrail: trailOut))
     }
 
     // MARK: - Internals

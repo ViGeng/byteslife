@@ -2,12 +2,11 @@ import SwiftUI
 import Charts
 import ByteLifeCore
 
-/// The Byte Flow deck: the live, chart-led face of the menubar panel. A hero flow chart shows the
-/// shape of the last half hour (network in teal, disk in violet, one shared byte scale), and each
-/// channel card carries a gradient sparkline in its own signal color with the live rate glowing
-/// beside it. The governing rule is LIGHT IS DATA: readouts glow and the live dot pulses only while a
-/// channel's smoothed rate clears its liveness threshold, the hex ticker prints real inter-poll
-/// deltas, and everything settles to a quiet dark baseline when nothing flows.
+/// The Byte Flow deck: the live, chart-led face of the menubar panel. Each channel card carries a
+/// gradient sparkline in its own signal color with the live rate glowing beside it. The governing
+/// rule is LIGHT IS DATA: readouts glow and the live dot pulses only while a channel's smoothed rate
+/// clears its liveness threshold, the hex ticker prints real inter-poll deltas, and everything
+/// settles to a quiet dark baseline when nothing flows.
 struct MeterBridgeView: View {
     @ObservedObject var viewModel: DashboardViewModel
     @Environment(\.colorScheme) private var scheme
@@ -16,13 +15,12 @@ struct MeterBridgeView: View {
     /// live: they render dim, without glow or pulse, regardless of `isLive`.
     @AppStorage("liveMode") private var liveMode = true
 
-    // The persisted per-chart history windows. Each rate channel and the hero flow chart carries its own,
-    // default 30M; the view model reads the same keys to size its fetch, so these stay one source of truth.
+    // The persisted per-chart history windows. Each rate channel carries its own, default 30M; the
+    // view model reads the same keys to size its fetch, so these stay one source of truth.
     @AppStorage(ChartWindowStore.key(.traffic)) private var trafficWindow: MeterWindow = .w30m
     @AppStorage(ChartWindowStore.key(.storage)) private var storageWindow: MeterWindow = .w30m
     @AppStorage(ChartWindowStore.key(.cognition)) private var cognitionWindow: MeterWindow = .w30m
     @AppStorage(ChartWindowStore.key(.mechanics)) private var mechanicsWindow: MeterWindow = .w30m
-    @AppStorage(ChartWindowStore.heroKey) private var heroWindow: MeterWindow = .w30m
 
     /// The one GLOBAL WORK-window duration in minutes, configured from any chart's Custom… editor and
     /// shared by every menu's WORK option. Defaults to eight hours, the length of a working day.
@@ -57,12 +55,11 @@ struct MeterBridgeView: View {
     private func notifyWindows() {
         viewModel.setWindows(
             [.traffic: trafficWindow, .storage: storageWindow,
-             .cognition: cognitionWindow, .mechanics: mechanicsWindow],
-            hero: heroWindow
+             .cognition: cognitionWindow, .mechanics: mechanicsWindow]
         )
     }
 
-    /// A compact dim monospaced window picker for a chart title (and the hero card). It lists the four
+    /// A compact dim monospaced window picker for a chart title. It lists the four
     /// fixed windows, the shared WORK window (labelled with its configured hours), and a Custom… item that
     /// opens the WORK-window editor for this chart. On selection it writes the persisted binding and
     /// notifies the view model. `id` distinguishes which chart's editor popover is showing.
@@ -124,7 +121,6 @@ struct MeterBridgeView: View {
                 binding.wrappedValue = .custom(minutes: clamped)
             }
         }
-        if heroWindow.isCustom { heroWindow = .custom(minutes: clamped) }
         notifyWindows()
     }
 
@@ -163,7 +159,6 @@ struct MeterBridgeView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
-            heroFlowChart
             ForEach(bridge.channels) { channel in
                 if channel.kind == .exposure {
                     exposureCard(channel)
@@ -281,65 +276,6 @@ struct MeterBridgeView: View {
             .foregroundStyle(LatticePalette.teal(scheme).opacity(0.4))
             .lineLimit(1)
             .truncationMode(.tail)
-    }
-
-    // MARK: - Hero flow chart
-
-    private struct FlowPoint: Identifiable {
-        let series: String
-        let minute: Int
-        let rate: Double
-        var id: String { "\(series)-\(minute)" }
-    }
-
-    /// Network and disk on ONE absolute bytes/s scale, so the taller series really is the bigger flow.
-    /// The hero carries its own window (independent of the TRAFFIC and STORAGE cards), so it reads the
-    /// bridge's hero-window bucket series rather than either channel's `rawBars`.
-    private var heroFlowChart: some View {
-        let traffic = bridge.heroTraffic
-        let storage = bridge.heroStorage
-        var points: [FlowPoint] = []
-        points += traffic.enumerated().map { FlowPoint(series: "traffic", minute: $0.offset, rate: $0.element) }
-        points += storage.enumerated().map { FlowPoint(series: "storage", minute: $0.offset, rate: $0.element) }
-        // A floor on the domain keeps an idle half hour reading flat instead of zooming into noise.
-        let maxY = max((traffic + storage).max() ?? 0, 65_536)
-
-        return Chart(points) { point in
-            AreaMark(
-                x: .value("Minute", point.minute),
-                y: .value("Rate", point.rate),
-                series: .value("Series", point.series)
-            )
-            .interpolationMethod(.monotone)
-            .foregroundStyle(by: .value("Series", point.series))
-            .opacity(0.25)
-
-            LineMark(
-                x: .value("Minute", point.minute),
-                y: .value("Rate", point.rate),
-                series: .value("Series", point.series)
-            )
-            .interpolationMethod(.monotone)
-            .lineStyle(StrokeStyle(lineWidth: 1.5))
-            .foregroundStyle(by: .value("Series", point.series))
-        }
-        .chartForegroundStyleScale([
-            "traffic": LatticePalette.teal(scheme),
-            "storage": LatticePalette.violet(scheme),
-        ])
-        .chartLegend(.hidden)
-        .chartXAxis(.hidden)
-        .chartYAxis(.hidden)
-        .chartYScale(domain: 0...maxY)
-        .frame(height: 56)
-        .padding(8)
-        .background(cardShape)
-        // The hero's own window selector, floated in the corner so the chart keeps its full height.
-        .overlay(alignment: .topTrailing) {
-            windowMenu($heroWindow, id: "hero")
-                .padding(.top, 5)
-                .padding(.trailing, 8)
-        }
     }
 
     // MARK: - Channel cards

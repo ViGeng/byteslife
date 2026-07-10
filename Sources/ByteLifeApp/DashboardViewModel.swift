@@ -68,8 +68,6 @@ final class DashboardViewModel: ObservableObject {
     /// current by `setWindows` on every menu change. They drive both the fetch depth and each channel's
     /// bucketing; a channel absent from the map falls back to 30M in the core build.
     private var channelWindows: [MeterChannelKind: MeterWindow] = [:]
-    /// The hero flow chart's window, independent of the channel windows and likewise persisted.
-    private var heroWindow: MeterWindow = .default
     /// When the auto-close sweep last ran. The sweep rides the existing ticks but is throttled to the
     /// idle cadence, so the panel's 2-second hot path gains no recurring queries.
     private var lastSweepAttempt: Date = .distantPast
@@ -81,17 +79,15 @@ final class DashboardViewModel: ObservableObject {
     private var compositeHistory: (dayEpoch: Int64, history: [Int64: [MetricKind: Int64]])?
 
     /// Completed minutes of history to fetch each tick: the deepest window any selected chart reads, so
-    /// one indexed `minuteSeries` call serves every channel and the hero at once. At 24H this is 1440 rows
+    /// one indexed `minuteSeries` call serves every channel at once. At 24H this is 1440 rows
     /// per kind, still a primary-key range scan over one or two contiguous days.
     private var fetchMinutes: Int {
-        let channelMax = channelWindows.values.map(\.totalMinutes).max() ?? MeterWindow.default.totalMinutes
-        return max(channelMax, heroWindow.totalMinutes)
+        channelWindows.values.map(\.totalMinutes).max() ?? MeterWindow.default.totalMinutes
     }
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
         self.channelWindows = ChartWindowStore.channelWindows()
-        self.heroWindow = ChartWindowStore.window(ChartWindowStore.heroKey)
         let initial = DaySheet.build(totals: [:], availabilityByFamily: [:], reconciliation: nil)
         self.daySheet = initial
         self.menubarBalance = initial.postedByteVolume
@@ -155,9 +151,8 @@ final class DashboardViewModel: ObservableObject {
     /// panel is open it refreshes at once (animated) so the chart re-buckets immediately; closed, it only
     /// records the choice for the next open. No new snapshot is taken, so rates and peaks are untouched —
     /// only the history bars re-shape.
-    func setWindows(_ windows: [MeterChannelKind: MeterWindow], hero: MeterWindow) {
+    func setWindows(_ windows: [MeterChannelKind: MeterWindow]) {
         channelWindows = windows
-        heroWindow = hero
         guard panelVisible else { return }
         refresh(publishMeter: true, animated: true)
     }
@@ -340,8 +335,7 @@ final class DashboardViewModel: ObservableObject {
             availabilityByFamily: availabilityByFamily,
             priorState: meterState,
             regrantFamilies: regrantFamilies,
-            windows: channelWindows,
-            heroWindow: heroWindow
+            windows: channelWindows
         )
         previousSnapshot = current
         meterState = built.state
