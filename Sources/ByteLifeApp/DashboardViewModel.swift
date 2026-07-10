@@ -15,7 +15,8 @@ import ByteLifeCore
 /// the monospaced figures roll to their new values (the split-flap tick the concept sheet asks for).
 @MainActor
 final class DashboardViewModel: ObservableObject {
-    /// The five accounts, their columns, the running balance, and whether today is posted.
+    /// The five accounts, their columns, and the running balance. The current day is always open now
+    /// that the books keep themselves, so the sheet never carries a posted state.
     @Published private(set) var daySheet: DaySheet
     /// Today's posted byte volume, shown next to the glyph in the menubar itself.
     @Published private(set) var menubarBalance: String
@@ -28,9 +29,6 @@ final class DashboardViewModel: ObservableObject {
     /// The ALSO ON THE BOOKS strip: the day's accessory figures (energy, top app, files, hosts, unlocks)
     /// as compact chips. Rebuilt on the same ticks as the day sheet from single-day indexed lookups.
     @Published private(set) var auxiliaryStrip: AuxiliaryStrip = AuxiliaryStrip(chips: [])
-    /// Today's stored receipt once the day is closed, so the panel can render the immutable strip on
-    /// posting and again whenever the user reopens it. Nil while the day is still open.
-    @Published private(set) var todaysReceipt: Reconciliation?
     /// Today's BYTELIFE COMPOSITE for the panel-header chip, rebuilt on the visible ticks from the totals
     /// already fetched plus the cached trailing history. Starts (and honestly reads) as collecting until
     /// the baseline holds enough recorded days.
@@ -72,6 +70,9 @@ final class DashboardViewModel: ObservableObject {
     private var channelWindows: [MeterChannelKind: MeterWindow] = [:]
     /// The hero flow chart's window, independent of the channel windows and likewise persisted.
     private var heroWindow: MeterWindow = .default
+    /// When the auto-close sweep last ran. The sweep rides the existing ticks but is throttled to the
+    /// idle cadence, so the panel's 2-second hot path gains no recurring queries.
+    private var lastSweepAttempt: Date = .distantPast
     /// The Composite baseline history (up to 28 recorded days strictly before today), cached while the
     /// panel stays open so no new query joins the 2-second hot path. The cache is dropped on every panel
     /// open (not just at rollover): AI transcript backfill and cross-midnight sessions book samples onto
@@ -98,7 +99,6 @@ final class DashboardViewModel: ObservableObject {
             current: MeterSnapshot(totals: [:], timestamp: Date()),
             previous: nil, series: [:], availabilityByFamily: [:], priorState: .initial
         )
-        self.todaysReceipt = nil
         self.launchAtLoginEnabled = coordinator.isLaunchAtLoginEnabled
         refresh(publishMeter: false, animated: false)
         startTimer(interval: Self.idleInterval, publishMeter: false, animated: false)
@@ -210,17 +210,6 @@ final class DashboardViewModel: ObservableObject {
         }
     }
 
-    /// Closes today's books, then refreshes so the panel flips to its posted state and shows the stamp.
-    /// Returns whether a receipt is now on file (freshly posted or already closed), so the panel can
-    /// present the strip.
-    @discardableResult
-    func reconcileToday() -> Bool {
-        coordinator.reconcileToday()
-        // A user action flipping the day to posted: publish and roll the figures, as the panel is open.
-        refresh(publishMeter: true, animated: true)
-        return todaysReceipt != nil
-    }
-
     /// Toggles the login item and reflects the outcome, disclosing unavailability when the OS refuses.
     func toggleLaunchAtLogin() {
         let succeeded = coordinator.setLaunchAtLogin(!launchAtLoginEnabled)
@@ -248,19 +237,30 @@ final class DashboardViewModel: ObservableObject {
     /// `animated` is set the published figures roll to their new values via numeric content transitions.
     private func refresh(publishMeter: Bool, animated: Bool) {
         let now = Date()
+        // The self-keeping books ride the existing ticks, throttled to the idle cadence so the fast
+        // open ticks add no recurring queries. The coordinator runs the sweep on its own serial
+        // background queue, so neither this call in init (the one-time upgrade backfill can close
+        // many days) nor a tick ever blocks the main thread. A sweep that hits a storage error simply
+        // runs again on a later tick; the coordinator notifies open ledger surfaces when anything
+        // posted.
+        if now.timeIntervalSince(lastSweepAttempt) >= Self.idleInterval {
+            lastSweepAttempt = now
+            coordinator.closeOverdueDays(now: now)
+        }
         let dayEpoch = DayBucket.dayEpoch(for: now)
         let totals = (try? coordinator.store.totals(forDayEpoch: dayEpoch)) ?? [:]
-        let reconciliation = (try? coordinator.store.reconciliation(forDayEpoch: dayEpoch)) ?? nil
 
         var availabilityByFamily: [MetricFamily: Availability] = [:]
         for entry in coordinator.registry.availabilitySnapshot() {
             availabilityByFamily[entry.family] = entry.availability
         }
 
+        // The current accounting day is by definition open (the auto-closer only ever closes days
+        // already ended), so the sheet builds with no reconciliation row.
         let sheet = DaySheet.build(
             totals: totals,
             availabilityByFamily: availabilityByFamily,
-            reconciliation: reconciliation,
+            reconciliation: nil,
             aiSources: coordinator.aiCollector.sourceStatuses()
         )
 
@@ -350,7 +350,6 @@ final class DashboardViewModel: ObservableObject {
         let apply = {
             self.daySheet = sheet
             self.menubarBalance = sheet.postedByteVolume
-            self.todaysReceipt = reconciliation
             if let bridge { self.meterBridge = bridge }
             if let ticker { self.tickerDeltas = ticker }
             if let strip { self.auxiliaryStrip = strip }

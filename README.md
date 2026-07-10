@@ -6,7 +6,7 @@
   <img src="docs/screenshots/panel-flow.png" width="360" alt="The ByteLife menu bar panel, a live Byte Flow dashboard">
 </p>
 
-ByteLife lives in your menu bar and keeps a running account of the digital side of your day. Click the icon and the **Byte Flow** deck drops down: a live, chart-led dashboard of five channels updating in real time. Behind it sits a double-entry **Ledger** that records each day, lets you close the books, and prints a shareable receipt. Everything is measured locally, and the app records counts, never contents.
+ByteLife lives in your menu bar and keeps a running account of the digital side of your day. Click the icon and the **Byte Flow** deck drops down: a live, chart-led dashboard of five channels updating in real time. Behind it sits a double-entry **Ledger** that keeps its own books: every day closes itself at midnight into an immutable receipt you can view, share, save, or print at any time. Everything is measured locally, and the app records counts, never contents.
 
 ## The idea
 
@@ -45,7 +45,7 @@ Plus a deck of auxiliary accounts kept *also on the books*: energy drawn (measur
 
 The **panel** is the live view. It opens fully formed with warm rates, animates figures as they climb, carries a LIVE toggle, and lets each channel pick its own chart window from 30 minutes up to 24 hours (or a custom work window). The hero number is the day's posted byte volume; the channels below it each show a live rate, a sparkline, a peak mark, and the day's directional totals.
 
-The **General Ledger** is the record. It treats your digital life as a small estate and installs you as its accountant: paired flows book as debits and credits, screen time and input book frankly as expense accounts, and each day can be *reconciled* with one click into an immutable, hash-stamped receipt you can save as a PDF or image. Browse by day, week, or month, with an all-time trial balance in the corner.
+The **General Ledger** is the record. It treats your digital life as a small estate and installs you as its accountant: paired flows book as debits and credits, screen time and input book frankly as expense accounts, and the books keep themselves — each day closes itself at midnight into an immutable, hash-stamped receipt, while the open day always shows an honest provisional one. Any receipt can be shared, saved as a PDF or image, or printed, and the sealed artifact stays tamper-evident. Browse by day, week, or month, with an all-time trial balance in the corner.
 
 ![The General Ledger window, showing a day's accounts, charts, and history](docs/screenshots/general-ledger.png)
 
@@ -68,7 +68,7 @@ Needs macOS 14+ and a Swift 6 toolchain.
 
 ```sh
 swift build           # build the package
-swift test            # run the core test suite (386 tests)
+swift test            # run the core test suite (458 tests)
 ./scripts/package-app.sh   # assemble an ad-hoc-signed dist/ByteLife.app
 ```
 
@@ -87,7 +87,7 @@ The Ledger framing is not decorative. Three of the five families really are pair
 
 ## Status
 
-ByteLife is at version 0.9.0 and actively developed. Traffic, storage, cognition, exposure, and mechanics all collect and render; the Ledger, reconcile ritual, receipts, and General Ledger window are in place. Version 0.9.0 added the honest numbers: a steady trailing-window token rate on the COGNITION dial, the notional AI dollar cost at list prices, and the BYTELIFE COMPOSITE, a market-style index that compares each day against its own 28-day median instead of pretending tokens and bytes can be added. On the roadmap: git and calendar activity, and multi-device support. It has no cloud sync, accounts, goals, streaks, or telemetry, by design.
+ByteLife is at version 0.9.1 and actively developed. Traffic, storage, cognition, exposure, and mechanics all collect and render; the Ledger, the self-keeping books, receipts, and the General Ledger window are in place. Version 0.9.0 added the honest numbers: a steady trailing-window token rate on the COGNITION dial, the notional AI dollar cost at list prices, and the BYTELIFE COMPOSITE, a market-style index that compares each day against its own 28-day median instead of pretending tokens and bytes can be added. Version 0.9.1 dropped the reconcile ritual: days close themselves at midnight, historical days backfill in arrears so every recorded day carries a receipt, the open day renders a provisional receipt at any moment, and receipts print. On the roadmap: git and calendar activity, and multi-device support. It has no cloud sync, accounts, goals, streaks, or telemetry, by design.
 
 ---
 

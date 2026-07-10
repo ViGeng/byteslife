@@ -309,6 +309,71 @@ final class ReceiptComposerTests: XCTestCase {
         XCTAssertNotEqual(compose().contentHash, composeGolden().contentHash)
     }
 
+    // MARK: - Provisional composition
+
+    /// 14:23 UTC on the golden day.
+    private static let goldenAsOf = Date(timeIntervalSince1970: 1_783_296_000 + 14 * 3_600 + 23 * 60)
+
+    private func composeProvisionalGolden() -> String {
+        ReceiptComposer.composeProvisional(
+            dayEpoch: 1_783_296_000,
+            totals: Self.goldenTotals,
+            machineName: "studio.local",
+            marginComment: Self.goldenComment,
+            asOf: Self.goldenAsOf,
+            calendar: utcCalendar(),
+            auxDistinctHosts: Self.goldenDistinctHosts,
+            auxTopApp: Self.goldenTopApp,
+            aiCost: Self.goldenCost,
+            composite: Self.goldenComposite
+        )
+    }
+
+    /// The provisional receipt carries the DAY OPEN header (with the as-of time zero-padded) where the
+    /// stamp would sit, and never a stamp.
+    func testProvisionalCarriesDayOpenHeaderInsteadOfStamp() {
+        let text = composeProvisionalGolden()
+        XCTAssertTrue(text.contains("DAY OPEN — FIGURES AS OF 14:23"))
+        XCTAssertFalse(text.contains("BALANCED"))
+        XCTAssertFalse(text.contains("FLAGGED"))
+        XCTAssertFalse(text.contains("ARREARS"))
+        XCTAssertTrue(text.split(separator: "\n").allSatisfy { $0.count <= 40 })
+    }
+
+    /// An open day has no seal: the provisional text prints no content-hash line at all, so there is
+    /// no hash for a barcode to draw from (the sealed receipt's hash appears nowhere in it).
+    func testProvisionalPrintsNoHashAndNoBarcodeSeed() {
+        let text = composeProvisionalGolden()
+        XCTAssertFalse(text.contains("Content hash"))
+        XCTAssertFalse(text.contains(composeGolden().contentHash))
+    }
+
+    /// Above the stamp position the provisional and the sealed compositions are byte-identical, so the
+    /// provisional variant can never re-narrate the figures the seal would freeze.
+    func testProvisionalSharesTheSealedBodyByteForByte() throws {
+        let sealed = composeGolden().text.components(separatedBy: "\n")
+        let provisional = composeProvisionalGolden().components(separatedBy: "\n")
+        let stampIndex = try XCTUnwrap(sealed.firstIndex { $0.contains("* BALANCED *") })
+        let openIndex = try XCTUnwrap(provisional.firstIndex { $0.contains("DAY OPEN") })
+        XCTAssertEqual(stampIndex, openIndex)
+        XCTAssertEqual(Array(sealed[..<stampIndex]), Array(provisional[..<openIndex]))
+    }
+
+    func testProvisionalCompositionIsDeterministic() {
+        XCTAssertEqual(composeProvisionalGolden(), composeProvisionalGolden())
+    }
+
+    /// Midnight formats zero-padded, so the header reads 00:05 and not 0:5.
+    func testProvisionalTimeZeroPads() {
+        let text = ReceiptComposer.composeProvisional(
+            dayEpoch: 1_783_296_000, totals: [:], machineName: "m",
+            marginComment: Self.goldenComment,
+            asOf: Date(timeIntervalSince1970: 1_783_296_000 + 5 * 60),
+            calendar: utcCalendar()
+        )
+        XCTAssertTrue(text.contains("DAY OPEN — FIGURES AS OF 00:05"))
+    }
+
     // MARK: - Fixture generation (skipped; used once to emit the golden file)
 
     func testEmitGolden() throws {

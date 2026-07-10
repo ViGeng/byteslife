@@ -1,15 +1,17 @@
 import SwiftUI
 import ByteLifeCore
 
-/// The nightly receipt as a real thermal-printer strip. It renders the *stored* receipt text verbatim in
+/// The daily receipt as a real thermal-printer strip. It renders the artifact's receipt text verbatim in
 /// a fixed-width monospaced face so the itemized columns line up to the character, and it is a receipt:
 /// the paper stays paper-colored in both appearances, sitting slightly lifted off the chassis on a soft
-/// drop shadow. The chrome is a genuine tear — triangular teeth cut into the top and bottom edges — and
-/// the footer prints a barcode drawn deterministically from the content hash with the hash beneath it.
-/// The artifact is immutable, so the view only reads and colours the text it was given; the stamp line
-/// alone takes colour (brass gold for BALANCED, oxblood for FLAGGED), and no figure is ever recomposed.
+/// drop shadow. The chrome is a genuine tear — triangular teeth cut into the top and bottom edges. A
+/// sealed day's footer prints a barcode drawn deterministically from the content hash with the hash
+/// beneath it; a provisional (open-day) receipt has no seal, so the footer is simply absent and the DAY
+/// OPEN header line takes the stamp's weight instead. The view only reads and colours the text it was
+/// given; the stamp line alone takes colour (brass gold for BALANCED, oxblood for FLAGGED), and no
+/// figure is ever recomposed.
 struct ReceiptStripView: View {
-    let reconciliation: Reconciliation
+    let artifact: ReceiptArtifact
     /// Point size of the monospaced tape. The panel uses the compact default; the window enlarges it.
     var fontSize: CGFloat = 11
 
@@ -18,7 +20,7 @@ struct ReceiptStripView: View {
     /// Receipt ink is always dark on cream paper, regardless of the system appearance, because a receipt
     /// is paper. The stamp line overrides this with brass or oxblood.
     private let ink = LedgerPalette.ink
-    private var lines: [String] { reconciliation.receiptText.components(separatedBy: "\n") }
+    private var lines: [String] { artifact.text.components(separatedBy: "\n") }
 
     /// Tooth geometry for the torn top and bottom edges. Content is inset by `toothHeight` so no text or
     /// bar ever collides with a tooth.
@@ -28,7 +30,10 @@ struct ReceiptStripView: View {
     var body: some View {
         VStack(spacing: 0) {
             tape
-            barcodeFooter
+            // The barcode is drawn from the seal, and a provisional receipt has none: no hash, no bars.
+            if let hash = artifact.contentHash {
+                barcodeFooter(hash)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, toothHeight + 12)
@@ -77,8 +82,11 @@ struct ReceiptStripView: View {
         return ink
     }
 
+    /// The stamp line, plus the provisional receipt's DAY OPEN header, which sits where the stamp would
+    /// and takes its weight (but plain ink: an open day has earned no colour).
     private func isStamp(_ line: String) -> Bool {
-        line.contains("* BALANCED *") || line.contains("* FLAGGED *") || line.contains("* POSTED IN ARREARS *")
+        line.contains("* BALANCED *") || line.contains("* FLAGGED *")
+            || line.contains("* POSTED IN ARREARS *") || line.contains("DAY OPEN — FIGURES AS OF")
     }
 
     // MARK: - Barcode footer
@@ -86,11 +94,11 @@ struct ReceiptStripView: View {
     /// The footer barcode, drawn deterministically from the receipt's content hash, with the hash printed
     /// beneath it in small monospaced type. Both come straight off the stored artifact, so a shared or
     /// exported receipt stays tamper-evident: the same hash always draws the same bars.
-    private var barcodeFooter: some View {
+    private func barcodeFooter(_ hash: String) -> some View {
         VStack(spacing: 5) {
-            BarcodeView(modules: ReceiptBarcode.modules(for: reconciliation.contentHash), ink: ink)
+            BarcodeView(modules: ReceiptBarcode.modules(for: hash), ink: ink)
                 .frame(maxWidth: .infinity)
-            Text(reconciliation.contentHash)
+            Text(hash)
                 .font(.system(size: fontSize - 2, design: .monospaced))
                 .monospacedDigit()
                 .foregroundStyle(ink.opacity(0.85))

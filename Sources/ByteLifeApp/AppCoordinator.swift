@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import ServiceManagement
 import ByteLifeCore
 
@@ -29,12 +30,22 @@ final class AppCoordinator {
     let inputCollector: InputCollector
     /// Retained so the Token Account disclosure can read which AI sources are reporting.
     let aiCollector: AICollector
-    /// Closes the day's books, composing and posting the immutable receipt. All the real work lives in
+    /// Closes the books, composing and posting immutable receipts. All the real work lives in
     /// ByteLifeCore; the coordinator only supplies the machine name and the live collector states.
     let reconciler: Reconciler
 
     /// The machine the books belong to, printed on every receipt header.
     let machineName: String = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+
+    /// When the app last became a live witness: launch, then every wake from sleep; `.distantFuture`
+    /// while the machine sleeps. The auto-closer stamps a just-ended day from the live snapshot only
+    /// when the app was awake since before that day's midnight; a launch or wake that missed the
+    /// rollover posts it in arrears instead. The sleep sentinel matters because the sweep timer and
+    /// the wake notification race on the main run loop after a wake: a sweep that fires first must
+    /// not read a pre-sleep value and live-stamp a midnight the machine slept through.
+    private(set) var awakeSince = Date()
+    private var wakeObserver: NSObjectProtocol?
+    private var sleepObserver: NSObjectProtocol?
 
     private init() {
         let dbPath = Self.databaseURL().path
@@ -83,6 +94,14 @@ final class AppCoordinator {
         ])
 
         reconciler = Reconciler(store: store)
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.awakeSince = Date() }
+        // Sleep ends the witness before the machine goes down, so no post-wake sweep can ever see a
+        // stale pre-sleep value, whatever order the run loop delivers the timer and the wake in.
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.awakeSince = .distantFuture }
         // Collector start-up does real I/O — the AI sources stat (and on first run, tail) every recent
         // transcript during discovery — so it must not run on the main thread, where it stalls the
         // app's first frames. Every collector is internally thread-safe and none needs a main run loop
@@ -97,31 +116,33 @@ final class AppCoordinator {
         }
     }
 
-    /// Closes today's books, posting the receipt exactly once. Returns the stored reconciliation, or
-    /// nil when the day was already closed or storage failed. The day sheet re-reads the store after.
-    @discardableResult
-    func reconcileToday() -> Reconciliation? {
-        reconcile(dayEpoch: DayBucket.dayEpoch(for: Date()))
-    }
+    /// The sweep's serial home, off the main thread: the first sweep after an upgrade backfills every
+    /// historical day (a burst of store queries per close) and must not stall the launch frames or the
+    /// panel — the 0.8.1 frozen-launch lesson. Serial, so ticks never run overlapping sweeps.
+    private static let sweepQueue = DispatchQueue(label: "life.byte.sweep", qos: .utility)
 
-    /// Closes an arbitrary accounting day, posting its receipt exactly once. Today closes against the
-    /// live collector states (BALANCED or FLAGGED); a past day closes in arrears, because availability
-    /// for the period was not retained and today's states would stamp it misleadingly. Posts
-    /// `.byteLifeDayPosted` on success so any open ledger surface reloads. Returns the stored
-    /// reconciliation, or nil when the day was already closed or storage failed.
-    @discardableResult
-    func reconcile(dayEpoch: Int64) -> Reconciliation? {
-        let inArrears = dayEpoch != DayBucket.dayEpoch(for: Date())
-        let posted = try? reconciler.reconcile(
-            dayEpoch: dayEpoch,
-            availability: registry.availabilitySnapshot(),
-            machineName: machineName,
-            closedInArrears: inArrears
-        )
-        if posted != nil {
-            NotificationCenter.default.post(name: .byteLifeDayPosted, object: nil)
+    /// The self-keeping books: closes every recorded day older than the current accounting day that
+    /// has no receipt yet, each exactly once. A day whose midnight just passed (inside the grace
+    /// window, with the app awake through the rollover) stamps from the flagship snapshot; every
+    /// other day posts in arrears. The witness state is captured on the caller's (main) thread and
+    /// the sweep runs on `sweepQueue`; `.byteLifeDayPosted` posts back on main when anything closed
+    /// so any open ledger surface reloads. A storage error is dropped because the tick calls again.
+    func closeOverdueDays(now: Date = Date()) {
+        let availability = registry.availabilitySnapshot()
+        let awake = awakeSince
+        Self.sweepQueue.async { [reconciler, machineName] in
+            let posted = (try? reconciler.closeOverdueDays(
+                availability: availability,
+                machineName: machineName,
+                awakeSince: awake,
+                now: now
+            )) ?? []
+            if !posted.isEmpty {
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: .byteLifeDayPosted, object: nil)
+                }
+            }
         }
-        return posted
     }
 
     /// Whether ByteLife is registered to launch at login. Reads the live SMAppService status.

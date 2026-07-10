@@ -9,7 +9,7 @@ enum GeneralLedgerWindow {
 }
 
 /// Drives the Back Office day dashboard: it loads the recorded periods with their per-day activity, the
-/// all-history figures for the pinned ALL TIME card, and the selected day's story and stored receipt.
+/// all-history figures for the pinned ALL TIME card, and the selected day's story and receipt.
 /// Kept on the main actor and reload-driven rather than polled, because the back-book is a browsable
 /// record rather than a live gauge, so its store queries stay off the panel's per-tick hot paths. All
 /// figure, series, and normalization logic lives in ByteLifeCore (`DayStory`, `DayActivity`, `LedgerBook`,
@@ -35,9 +35,10 @@ final class GeneralLedgerViewModel: ObservableObject {
     @Published private(set) var selectedStory: DayStory?
     /// The selected aggregate period's story: per-day bars, aggregate cards, and posted coverage.
     @Published private(set) var selectedPeriodStory: PeriodStory?
-    /// The stored receipt for the selected day, or nil when the day is still open. Day granularity only;
-    /// aggregate periods never compose a receipt.
-    @Published private(set) var selectedReceipt: Reconciliation?
+    /// The selected day's receipt: the stored, sealed artifact for a posted day, or a provisional
+    /// compose for the open day. Nil only for a past day the auto-closer has not posted yet (or on a
+    /// storage error). Day granularity only; aggregate periods never compose a receipt.
+    @Published private(set) var selectedArtifact: ReceiptArtifact?
     /// The selected day's (or aggregate period's) accessory accounts: energy, focus, files, hosts, and the
     /// session/unlock memos. Day granularity carries the energy hourly bars; aggregates are figure-only.
     @Published private(set) var selectedAuxiliary: AuxiliaryStory?
@@ -53,8 +54,10 @@ final class GeneralLedgerViewModel: ObservableObject {
     /// and the sensor count memos. Aggregates sum the counts across days and carry no curves.
     @Published private(set) var selectedSensors: SensorStory?
 
-    /// Today's epoch, so the header can distinguish a still-open today from a closeable past day.
-    let todayEpoch: Int64
+    /// Today's epoch, so the header can distinguish the still-open today from a posted past day.
+    /// Computed live: the window can sit open across midnight, and the auto-close reload must see the
+    /// new accounting day rather than the one the window opened on.
+    var todayEpoch: Int64 { DayBucket.dayEpoch(for: Date()) }
     private let coordinator: AppCoordinator
     private var postObserver: NSObjectProtocol?
 
@@ -74,7 +77,6 @@ final class GeneralLedgerViewModel: ObservableObject {
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
-        self.todayEpoch = DayBucket.dayEpoch(for: Date())
         // No reload here: the view's onAppear performs the initial load, so opening the window
         // queries the store once, not twice.
         // A close from the menubar panel must refresh an already-open window, whose model is otherwise
@@ -172,13 +174,6 @@ final class GeneralLedgerViewModel: ObservableObject {
     /// The activity row for a day, for the sidebar minis; nil when the day carries no recorded activity.
     func activityRow(for day: Int64) -> DayActivityRow? { activity.first { $0.dayEpoch == day } }
 
-    /// Closes a past unposted day's books the same exactly-once way the panel closes today, then reloads
-    /// so the period flips to posted and the dashboard shows the stored receipt.
-    func closeBooks(day: Int64) {
-        coordinator.reconcile(dayEpoch: day)
-        reload()
-    }
-
     /// Rebuilds the aggregate rows from the cached rollups for the current granularity. Day granularity
     /// uses the `periods` list, so it clears the group rows.
     private func rebuildGroups() {
@@ -188,19 +183,19 @@ final class GeneralLedgerViewModel: ObservableObject {
             : []
     }
 
-    /// Builds the selected day's story from one indexed hourly query and its totals, and reads its stored
-    /// receipt. An absent selection clears both.
+    /// Builds the selected day's story from one indexed hourly query and its totals, and resolves its
+    /// receipt (sealed from the store, provisional for the open day). An absent selection clears both.
     private func loadDayDetail() {
         guard let day = selectedDay else {
             selectedStory = nil
-            selectedReceipt = nil
+            selectedArtifact = nil
             selectedAuxiliary = nil
             selectedCognition = nil
             selectedSensors = nil
             selectedComposite = nil
             return
         }
-        selectedReceipt = (try? store.reconciliation(forDayEpoch: day)) ?? nil
+        selectedArtifact = coordinator.receiptArtifact(dayEpoch: day)
         let totals = (try? store.totals(forDayEpoch: day)) ?? [:]
         let hourly = (try? store.hourlySeries(kinds: DayStory.hourlyKinds, dayEpoch: day)) ?? [:]
         // The day's typing rhythm for the Labor card, from its per-minute keystroke buckets. Day
@@ -316,9 +311,10 @@ final class GeneralLedgerViewModel: ObservableObject {
 /// The Back Office: a two-pane day dashboard. A ~280pt PERIODS sidebar lists the recorded days newest
 /// first, each with its stamp chip and two thin normalized activity minis so the list itself reads as a
 /// history chart, and pins a compact ALL TIME card at its foot. The main pane is the selected day's
-/// dashboard: a header with the full date, the day's posted byte volume hero figure, and the primary
-/// action; a hero flow chart of the day's 24 hours; the five account cards (Token full width, then a 2x2
-/// grid); and, for a posted day, the stored receipt strip. All chrome is adaptive via `LatticePalette`.
+/// dashboard: a header with the full date, the day's posted byte volume hero figure, and the receipt
+/// toolbar; a hero flow chart of the day's 24 hours; the five account cards (Token full width, then a
+/// 2x2 grid); and the day's receipt strip — sealed for a posted day, provisional for the open one. All
+/// chrome is adaptive via `LatticePalette`.
 struct GeneralLedgerView: View {
     @StateObject private var vm = GeneralLedgerViewModel(coordinator: .shared)
     @Environment(\.colorScheme) private var scheme
@@ -472,9 +468,10 @@ struct GeneralLedgerView: View {
         .buttonStyle(.plain)
     }
 
-    /// One aggregate period row (Week or Month): the period label, its posted-coverage chip, and the same
-    /// two normalized activity minis (amber tokens over teal bytes) the day rows carry, so the list reads
-    /// as a history chart at any granularity. Selection gets the same card fill and teal accent edge.
+    /// One aggregate period row (Week or Month): the period label and the same two normalized activity
+    /// minis (amber tokens over teal bytes) the day rows carry, so the list reads as a history chart at
+    /// any granularity. No coverage chip: the books keep themselves, so posted coverage is a given.
+    /// Selection gets the same card fill and teal accent edge.
     private func groupRow(_ group: PeriodGroup) -> some View {
         let selected = vm.selectedGroupID == group.id
         return Button {
@@ -488,7 +485,6 @@ struct GeneralLedgerView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                     Spacer()
-                    coverageChip(posted: group.postedCount, total: group.dayCount)
                 }
                 VStack(spacing: 3) {
                     mini(fraction: group.tokenFraction, color: LatticePalette.amber(scheme))
@@ -519,13 +515,6 @@ struct GeneralLedgerView: View {
                 .frame(width: 2)
                 .padding(.vertical, 4)
         }
-    }
-
-    /// The aggregate posted-coverage chip ("3/7"): brass-tinted and filled once every member day is
-    /// posted, a dim hairline outline otherwise.
-    private func coverageChip(posted: Int, total: Int) -> some View {
-        let full = total > 0 && posted == total
-        return chip("\(posted)/\(total)", color: full ? LedgerPalette.brass : dim, filled: full)
     }
 
     /// One normalized activity mini: a thin track with a fill whose width is the day's fraction of the
@@ -614,8 +603,8 @@ struct GeneralLedgerView: View {
                         if let sensors = vm.selectedSensors {
                             sensorsSection(sensors)
                         }
-                        if let receipt = vm.selectedReceipt, showingReceipt {
-                            receiptSection(receipt)
+                        if let artifact = vm.selectedArtifact, showingReceipt {
+                            receiptSection(artifact)
                         }
                     }
                     .padding(16)
@@ -658,19 +647,19 @@ struct GeneralLedgerView: View {
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(dim)
             }
-            primaryAction(day: day)
+            primaryAction
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
     }
 
-    /// The dim status line under the date: unposted days say whether the period is still open or a past
-    /// period awaiting posting (a posted day's stamp chip already reads), and the Composite's dropped-
-    /// component disclosure follows when a zero-baseline component left the mean.
+    /// The dim status line under the date: an unsealed day says whether the period is still open or a
+    /// past period awaiting its automatic posting (a posted day's stamp chip already reads), and the
+    /// Composite's dropped-component disclosure follows when a zero-baseline component left the mean.
     private func statusLine(day: Int64) -> String? {
         var parts: [String] = []
-        if vm.selectedReceipt == nil {
-            parts.append(day == vm.todayEpoch ? "Period still open." : "Past period, unposted.")
+        if vm.selectedArtifact?.isProvisional != false {
+            parts.append(day == vm.todayEpoch ? "Period still open." : "Past period, awaiting posting.")
         }
         if let disclosure = vm.selectedComposite?.disclosure {
             parts.append("Composite: \(disclosure).")
@@ -689,26 +678,20 @@ struct GeneralLedgerView: View {
             .help(composite.receiptLine)
     }
 
-    /// "Close the books" for an unposted day, or the Share / Save receipt toolbar plus a View-receipt
-    /// toggle for a posted one.
+    /// The Share / Save / Print receipt toolbar plus a View-receipt toggle. There is no closing act
+    /// anymore: every day carries a receipt (sealed for past days, provisional for the open one), so
+    /// the only day without an action is a past day whose automatic posting has not landed yet.
     @ViewBuilder
-    private func primaryAction(day: Int64) -> some View {
-        if let receipt = vm.selectedReceipt {
+    private var primaryAction: some View {
+        if let artifact = vm.selectedArtifact {
             HStack(spacing: 12) {
-                ReceiptToolbar(reconciliation: receipt)
+                ReceiptToolbar(artifact: artifact)
                 Button {
                     withAnimation(.easeOut(duration: 0.15)) { showingReceipt.toggle() }
                 } label: {
                     Text(showingReceipt ? "Hide receipt" : "View receipt")
                         .font(.system(.caption, design: .monospaced))
                 }
-            }
-        } else {
-            Button {
-                vm.closeBooks(day: day)
-            } label: {
-                Text("Close the books")
-                    .font(.system(.caption, design: .monospaced).weight(.semibold))
             }
         }
     }
@@ -934,18 +917,19 @@ struct GeneralLedgerView: View {
 
     // MARK: - Receipt
 
-    /// The posted day's stored receipt strip on the chassis with the same Share / Save toolbar, shown
-    /// below the account grid when the header's View-receipt toggle is on.
-    private func receiptSection(_ receipt: Reconciliation) -> some View {
+    /// The day's receipt strip on the chassis with the same Share / Save / Print toolbar, shown below
+    /// the account grid when the header's View-receipt toggle is on: the sealed stored artifact for a
+    /// posted day, the provisional compose (DAY OPEN header, no barcode) for the open one.
+    private func receiptSection(_ artifact: ReceiptArtifact) -> some View {
         VStack(spacing: 10) {
             HStack {
                 Text("RECEIPT")
                     .font(.system(.caption, design: .monospaced).weight(.semibold))
                     .foregroundStyle(dim)
                 Spacer()
-                ReceiptToolbar(reconciliation: receipt)
+                ReceiptToolbar(artifact: artifact)
             }
-            ReceiptStripView(reconciliation: receipt, fontSize: 12)
+            ReceiptStripView(artifact: artifact, fontSize: 12)
                 .frame(maxWidth: .infinity)
         }
         .padding(.top, 4)
@@ -954,11 +938,11 @@ struct GeneralLedgerView: View {
 
     // MARK: - Main pane: the aggregate period dashboard
 
-    /// The aggregate story shown for a Week or Month selection: a header with the period label, coverage
-    /// chip, and posted-volume hero; a hero chart of per-day traffic/storage bars across the period; the
-    /// aggregate account cards (Token full width, then a 2x2 grid) with per-day mini bars; and, in place of
-    /// the receipt, a posted-coverage card whose day chips jump back to Day granularity. Aggregate periods
-    /// never compose a receipt and never show a Close action.
+    /// The aggregate story shown for a Week or Month selection: a header with the period label and
+    /// posted-volume hero; a hero chart of per-day traffic/storage bars across the period; the aggregate
+    /// account cards (Token full width, then a 2x2 grid) with per-day mini bars; and, in place of the
+    /// receipt, a card of the member days' stamp chips that jump back to Day granularity. Aggregate
+    /// periods never compose a receipt.
     @ViewBuilder
     private var periodDashboard: some View {
         if let story = vm.selectedPeriodStory, !story.days.isEmpty {
@@ -980,7 +964,7 @@ struct GeneralLedgerView: View {
                         if let sensors = vm.selectedSensors {
                             sensorsSection(sensors)
                         }
-                        coverageSection(story)
+                        daysSection(story)
                     }
                     .padding(16)
                 }
@@ -990,15 +974,14 @@ struct GeneralLedgerView: View {
         }
     }
 
-    /// The period header: the label with its coverage chip, a day-count status line, and the aggregate
-    /// posted-volume hero figure. There is no primary action, because an aggregate period never posts.
+    /// The period header: the label, a day-count status line, and the aggregate posted-volume hero
+    /// figure. There is no primary action, because an aggregate period never posts.
     private func periodHeader(_ story: PeriodStory) -> some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 10) {
                     Text(story.label)
                         .font(.system(.title3, design: .monospaced).weight(.semibold))
-                    coverageChip(posted: story.postedCount, total: story.dayCount)
                 }
                 Text(story.dayCount == 1 ? "1 recorded day" : "\(story.dayCount) recorded days")
                     .font(.system(.caption2, design: .monospaced))
@@ -1100,20 +1083,16 @@ struct GeneralLedgerView: View {
         .background(cardShape)
     }
 
-    /// The posted-coverage card that stands in for the receipt on an aggregate period: the coverage line
-    /// ("3 of 7 days posted") over a wrapping row of the member days' stamp chips. Clicking a chip switches
-    /// to Day granularity and selects that day.
-    private func coverageSection(_ story: PeriodStory) -> some View {
+    /// The card that stands in for the receipt on an aggregate period: a wrapping row of the member
+    /// days' stamp chips as navigation. The posted-coverage line is gone — the books keep themselves,
+    /// so every past day is posted and counting them stopped meaning anything.
+    private func daysSection(_ story: PeriodStory) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("COVERAGE")
+                Text("DAYS")
                     .font(.system(.caption, design: .monospaced).weight(.semibold))
                     .foregroundStyle(dim)
                 Spacer()
-                Text(story.coverageText)
-                    .font(.system(.caption, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(story.fullyPosted ? LedgerPalette.brass : dim)
             }
             LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: 66), spacing: 6, alignment: .leading)],

@@ -75,20 +75,13 @@ public enum ReceiptComposer {
         aiCost: AICostSummary? = nil,
         composite: Composite? = nil
     ) -> Receipt {
-        let ledger = Ledger(totals: totals)
         let stamp = closedInArrears ? ReceiptStamp.postedInArrears : stamp(for: availability)
 
-        var body: [String] = []
-        body += masthead()
-        body += header(dayEpoch: dayEpoch, machineName: machineName, calendar: calendar)
-        body += tokenSection(ledger, cost: aiCost)
-        body += trafficSection(ledger)
-        body += storageSection(ledger)
-        body += hoursSection(ledger)
-        body += laborSection(ledger)
-        body += auxiliarySection(totals: totals, distinctHosts: auxDistinctHosts, topApp: auxTopApp)
-        body += totalsBlock(ledger, composite: composite)
-        body += marginBlock(marginComment)
+        var body = commonBody(
+            dayEpoch: dayEpoch, totals: totals, machineName: machineName,
+            marginComment: marginComment, calendar: calendar, auxDistinctHosts: auxDistinctHosts,
+            auxTopApp: auxTopApp, aiCost: aiCost, composite: composite
+        )
         body += stampBlock(stamp)
 
         let bodyText = body.joined(separator: "\n")
@@ -100,6 +93,62 @@ public enum ReceiptComposer {
         full.append(rule())
 
         return Receipt(text: full.joined(separator: "\n"), stamp: stamp, contentHash: hash)
+    }
+
+    /// Composes the OPEN day's provisional receipt: the exact body the sealed compose prints, but
+    /// where the stamp would sit it carries "DAY OPEN — FIGURES AS OF HH:MM" (`asOf` rendered in
+    /// `calendar`), and it prints NO content hash, so no barcode can ever be drawn from it — the hash
+    /// is the seal of a closed record and an open day has no seal. Compose-only; never stored.
+    public static func composeProvisional(
+        dayEpoch: Int64,
+        totals: [MetricKind: Int64],
+        machineName: String,
+        marginComment: String,
+        asOf: Date,
+        calendar: Calendar = .current,
+        auxDistinctHosts: Int = 0,
+        auxTopApp: (name: String, seconds: Int64)? = nil,
+        aiCost: AICostSummary? = nil,
+        composite: Composite? = nil
+    ) -> String {
+        var lines = commonBody(
+            dayEpoch: dayEpoch, totals: totals, machineName: machineName,
+            marginComment: marginComment, calendar: calendar, auxDistinctHosts: auxDistinctHosts,
+            auxTopApp: auxTopApp, aiCost: aiCost, composite: composite
+        )
+        let c = calendar.dateComponents([.hour, .minute], from: asOf)
+        let time = String(format: "%02d:%02d", c.hour ?? 0, c.minute ?? 0)
+        lines.append(center("DAY OPEN — FIGURES AS OF \(time)"))
+        lines.append(rule())
+        return lines.joined(separator: "\n")
+    }
+
+    /// The receipt body above the stamp block, shared line-for-line by the sealed and the provisional
+    /// compositions so the two can never drift apart.
+    private static func commonBody(
+        dayEpoch: Int64,
+        totals: [MetricKind: Int64],
+        machineName: String,
+        marginComment: String,
+        calendar: Calendar,
+        auxDistinctHosts: Int,
+        auxTopApp: (name: String, seconds: Int64)?,
+        aiCost: AICostSummary?,
+        composite: Composite?
+    ) -> [String] {
+        let ledger = Ledger(totals: totals)
+        var body: [String] = []
+        body += masthead()
+        body += header(dayEpoch: dayEpoch, machineName: machineName, calendar: calendar)
+        body += tokenSection(ledger, cost: aiCost)
+        body += trafficSection(ledger)
+        body += storageSection(ledger)
+        body += hoursSection(ledger)
+        body += laborSection(ledger)
+        body += auxiliarySection(totals: totals, distinctHosts: auxDistinctHosts, topApp: auxTopApp)
+        body += totalsBlock(ledger, composite: composite)
+        body += marginBlock(marginComment)
+        return body
     }
 
     /// The stamp for an availability snapshot: BALANCED when every collector was running, otherwise

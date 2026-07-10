@@ -283,6 +283,7 @@ The order, each step gated on the previous ship:
 1. Iteration 9 (shipped 2026-07-07, 0.8.0): sensors, true energy, permission self-recovery, fine-grained AI (schema v4), the WORK window, shell commands.
 1a. Stabilization (0.8.1, executed the same evening): the Bluetooth TCC kill, the beachballing permission flow, and the blocking launch — see "Stabilization" below. On 2026-07-08 the repo went public, the Homebrew tap moved to the conventional layout (releases on byteslife itself, the cask points there, the old private-repo hosting hack retired), and 0.8.1 shipped to the tap with a public-facing README.
 2. Iteration 10 (executed 2026-07-10, 0.9.0; the tap publish waits on the founder's verdict): the realtime token meter, the notional AI cost, and the Composite. All three only read what v4 already records, so this was the highest founder-visible value per line changed.
+2a. Iteration 10a (executed 2026-07-10, 0.9.1): the self-keeping books — the founder dropped the Reconcile ritual; days auto-close at midnight with a stamp-honesty grace window, historical days backfill in arrears, the open day renders a provisional unsealed receipt, and receipts gain Print. Founder feedback on the panel the same day also retired the hero flow chart (the TRAFFIC and STORAGE cards carry their own sparklines, and better overall metrics are planned), shipped in the same 0.9.1 release.
 3. Iteration 11 (0.10.0, the deeper record, schema v5): the Workshop (git) and the Journal in one migration, plus the working-hours strip as the first journal-powered insight.
 4. Iteration 12 (0.11.0, beyond the machine, schema v6): the Engagement Book (calendar) before the Correspondence account (email), ordered by permission friction.
 5. The standing backlog behind those: the weekly Statement, multi-device holdings and agentless SSH collection, the app rename, and face-distance sensing as noted future work.
@@ -331,6 +332,25 @@ Founder report: the COGNITION rate reads near zero while tokens are visibly burn
 ## Verification
 
 `swift build` and `swift test` green; the founder sees the COGNITION dial read steady while an agentic session burns, a plausible dollar figure for today's real usage across all three sources, and a Composite near 100 on an ordinary day. Version 0.9.0.
+
+---
+
+# Iteration 10a: the self-keeping books
+
+Status: executed 2026-07-10 (see CHANGELOG.md, iteration 10a). Approved 2026-07-10 from founder feedback on 0.9.0. The founder sometimes pressed "Close the books" accidentally and could not reopen the day, and wanted the receipt printable without any closing act; asked to choose between a confirmation step, a provisional receipt, bookkeeping-style voiding, and dropping the ritual, he chose to drop the ritual entirely. Version 0.9.1, no schema change. Deviations recorded after execution: the grace window guards against the sleep/wake run-loop race with a will-sleep sentinel (awakeSince parks at distant-future at sleep, so a sweep racing the wake notification books arrears rather than live-stamping a midnight the app slept through); the auto-close sweep runs on a serial background queue with a 30-second throttle, never on the main thread, because the one-time upgrade backfill would otherwise repeat the 0.8.1 frozen-launch pattern; the open-day receipt window recomposes on becoming key and on a 30-second timer so a re-raised window never shows hours-old figures; and one reviewer finding was rejected as accepted semantics — a forward clock jump can seal the real today early with partial figures, which is locally indistinguishable from a genuine rollover and whose remedies (clock heuristics or voiding) the founder declined.
+
+## Decisions
+
+- Days close themselves. An auto-closer runs on the existing slow background tick: any recorded day older than the current accounting day that has no reconciliation row is closed automatically. The exactly-once store guard (`INSERT OR IGNORE`) remains the single source of truth, so races between a tick and a launch are harmless.
+- Stamp honesty with a grace window. A day closed while the app is awake within a short grace period after its own midnight (10 minutes) stamps BALANCED or FLAGGED from the live collector snapshot, because that snapshot is still an honest witness of the day just ended. Any later close books POSTED IN ARREARS, exactly as manual arrears closes did. On the first run after upgrade this backfill-posts every historical unposted day in arrears, so every recorded day has a receipt.
+- The receipt is always available. Past days render their stored, sealed artifact verbatim, unchanged. The open day renders a PROVISIONAL receipt composed live from current figures: it carries a "DAY OPEN — FIGURES AS OF HH:MM" header line where the stamp would sit, and NO content hash and NO barcode, because the hash is the seal of a closed record and an open day has no seal. The provisional variant is compose-only and never stored; the sealed compose path and the stored golden are untouched.
+- The buttons change meaning. The panel footer's Reconcile button becomes "View receipt" (opens today's provisional receipt in the receipt window). The Back Office drops "Close the books"; a day's detail always shows its receipt (sealed or provisional) with the existing Share and Save toolbar. Both receipt surfaces gain Print, driven by the existing vector-PDF render through NSPrintOperation.
+- Aggregate periods drop the posted-coverage line ("3 of 7 days posted") once every past day is auto-posted; the day-stamp chips stay as navigation.
+- Accepted and disclosed semantics: the sealed receipt records the books as known at close time. AI transcripts ingested later can still book tokens onto an already-sealed day (this was true of manual closes too); the day story reads live data and may legitimately show more than the receipt. The margin-note engine and all stamp colors are unchanged; brass stays BALANCED-only.
+
+## Verification
+
+`swift build` and `swift test` green with the auto-closer (rollover close inside and outside the grace window, arrears backfill, exactly-once under repeated ticks) and the provisional compose (no hash, no barcode, header line, sealed path byte-identical) under test; the founder sees yesterday close itself, every historical day carrying a receipt, and today's receipt printable at any moment.
 
 ---
 
