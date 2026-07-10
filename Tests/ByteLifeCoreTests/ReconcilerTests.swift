@@ -112,6 +112,24 @@ final class ReconcilerTests: XCTestCase {
         XCTAssertEqual(try store.reconciliation(forDayEpoch: dayEpoch(past))?.stamp, "POSTED IN ARREARS")
     }
 
+    /// The full close path books the iteration-10 lines: the notional cost with its list-price framing
+    /// (a day with no model rows values honestly at $0.00) and the Composite line, which reads its
+    /// collecting state while the baseline is short instead of faking a number.
+    func testReconcileBooksCostAndCompositeLines() throws {
+        let (store, dir) = try TempStore.make()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let today = fixedTimestamp(minute: 30)
+        try store.record([Sample(kind: .networkBytesIn, value: 2_000, timestamp: today)])
+
+        let receipt = try XCTUnwrap(Reconciler(store: store).reconcile(
+            dayEpoch: dayEpoch(today), availability: availability(all: .running), machineName: "m"))
+        XCTAssertTrue(receipt.receiptText.contains("Notional cost (list)"))
+        XCTAssertTrue(receipt.receiptText.contains("$0.00"))
+        XCTAssertTrue(receipt.receiptText.contains("At list prices as of"))
+        XCTAssertTrue(receipt.receiptText.contains("Composite vs 28-day median: collecting"))
+    }
+
     func testADayClosesExactlyOnce() throws {
         let (store, dir) = try TempStore.make()
         defer { try? FileManager.default.removeItem(at: dir) }

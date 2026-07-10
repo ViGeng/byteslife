@@ -3,6 +3,7 @@ import Foundation
 /// Which margin rule produced a note. Exposed so callers and tests can assert selection without
 /// pattern-matching on the sentence text.
 public enum MarginRule: String, Sendable, CaseIterable {
+    case composite
     case variance
     case generatedExceedsTyped
     case largestAccount
@@ -30,6 +31,12 @@ public enum MarginNotes {
     /// A series must move at least this many percent off its trailing average to be remarkable.
     static let varianceThresholdPercent = 100
 
+    /// A Composite at or beyond a factor of two off its 28-day median is exceptional: the whole book
+    /// moved, not one series, so it outranks the single-series variance rule. The factor-of-two bar
+    /// mirrors the variance rule's 100-percent discipline.
+    static let compositeHighIndex = 200
+    static let compositeLowIndex = 50
+
     /// A day is "quiet" only when it falls below all three of these floors together.
     static let quietByteVolume: Int64 = 200 * 1024 * 1024
     static let quietTokenVolume: Int64 = 500
@@ -49,11 +56,17 @@ public enum MarginNotes {
         Series(name: "Screen time") { $0.account(.hours).debit },
     ]
 
-    /// The winning note for `today` given up to seven trailing recorded days.
-    public static func note(today: [MetricKind: Int64], trailing: [[MetricKind: Int64]]) -> MarginNote {
+    /// The winning note for `today` given up to seven trailing recorded days and, when the caller has
+    /// one, the day's Composite (nil keeps the pre-iteration-10 rule order exactly).
+    public static func note(
+        today: [MetricKind: Int64],
+        trailing: [[MetricKind: Int64]],
+        composite: Composite? = nil
+    ) -> MarginNote {
         let ledger = Ledger(totals: today)
         let trailingLedgers = trailing.map { Ledger(totals: $0) }
 
+        if let n = compositeNote(composite) { return n }
         if let n = varianceNote(ledger, trailingLedgers) { return n }
         if let n = generatedExceedsTypedNote(ledger) { return n }
         if let n = largestAccountNote(ledger) { return n }
@@ -65,11 +78,34 @@ public enum MarginNotes {
     }
 
     /// Convenience returning only the sentence.
-    public static func comment(today: [MetricKind: Int64], trailing: [[MetricKind: Int64]]) -> String {
-        note(today: today, trailing: trailing).text
+    public static func comment(
+        today: [MetricKind: Int64],
+        trailing: [[MetricKind: Int64]],
+        composite: Composite? = nil
+    ) -> String {
+        note(today: today, trailing: trailing, composite: composite).text
     }
 
     // MARK: - Rules
+
+    /// An indexed Composite at or beyond a factor of two off the median. Non-indexed states (collecting,
+    /// no baseline) never comment: there is no honest figure to remark on.
+    private static func compositeNote(_ composite: Composite?) -> MarginNote? {
+        guard case .indexed(let reading)? = composite else { return nil }
+        let direction: String
+        if reading.index >= compositeHighIndex {
+            direction = "heavy"
+        } else if reading.index <= compositeLowIndex {
+            direction = "light"
+        } else {
+            return nil
+        }
+        return MarginNote(
+            rule: .composite,
+            text: "Composite at \(reading.index) versus the \(Composite.baselineWindow)-day median. "
+                + "The whole book ran \(direction). Filing it."
+        )
+    }
 
     private static func varianceNote(_ today: Ledger, _ trailing: [Ledger]) -> MarginNote? {
         guard !trailing.isEmpty else { return nil }

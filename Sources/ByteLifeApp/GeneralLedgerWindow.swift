@@ -42,8 +42,13 @@ final class GeneralLedgerViewModel: ObservableObject {
     /// session/unlock memos. Day granularity carries the energy hourly bars; aggregates are figure-only.
     @Published private(set) var selectedAuxiliary: AuxiliaryStory?
     /// The selected day's (or aggregate period's) COGNITION breakdown: top models with token bars and, for
-    /// a single day, the session memo. Aggregates sum model totals across days and carry no memo.
+    /// a single day, the session memo. Aggregates sum model totals across days and carry no memo. Both
+    /// carry the notional cost at bundled list prices (a day prices its own rows; an aggregate combines
+    /// the member days' daily summaries).
     @Published private(set) var selectedCognition: CognitionBreakdown?
+    /// The selected day's BYTELIFE COMPOSITE against its trailing 28 recorded days, shaped from the cached
+    /// per-day rollups with no fresh store query. Nil for aggregate periods: the Composite is a day figure.
+    @Published private(set) var selectedComposite: Composite?
     /// The selected day's (or aggregate period's) SENSORS deck: the muted curve charts (single days only)
     /// and the sensor count memos. Aggregates sum the counts across days and carry no curves.
     @Published private(set) var selectedSensors: SensorStory?
@@ -192,6 +197,7 @@ final class GeneralLedgerViewModel: ObservableObject {
             selectedAuxiliary = nil
             selectedCognition = nil
             selectedSensors = nil
+            selectedComposite = nil
             return
         }
         selectedReceipt = (try? store.reconciliation(forDayEpoch: day)) ?? nil
@@ -204,6 +210,10 @@ final class GeneralLedgerViewModel: ObservableObject {
         )
         selectedStory = DayStory.build(dayEpoch: day, totals: totals, hourly: hourly, cadence: cadence)
 
+        // The day's Composite against its own history, from the cached rollups (Composite.build ignores
+        // days at or after the target, so handing the whole map in is safe).
+        selectedComposite = Composite.build(dayEpoch: day, todayTotals: totals, history: totalsByDay)
+
         // The accessory accounts, with the energy per-hour bars from a single-day indexed hourly query.
         let focus = (try? store.topFocus(dayEpoch: day, limit: 5)) ?? []
         let hosts = (try? store.distinctHosts(dayEpoch: day)) ?? 0
@@ -212,10 +222,14 @@ final class GeneralLedgerViewModel: ObservableObject {
             totals: totals, focus: focus, distinctHosts: hosts, energyHourly: energyHourly
         )
 
-        // The COGNITION card's fine-grained view: the day's per-model token totals and its session stats.
+        // The COGNITION card's fine-grained view: the day's per-model token totals, its session stats,
+        // and the notional cost of the day's rows at bundled list prices.
         let modelTotals = (try? store.aiModelTotals(dayEpoch: day)) ?? []
         let sessionStats = (try? store.aiSessionStats(dayEpoch: day)) ?? AISessionStats(count: 0, averageLength: 0, longestLength: 0)
-        selectedCognition = CognitionBreakdown.build(modelTotals: modelTotals, sessionStats: sessionStats)
+        selectedCognition = CognitionBreakdown.build(
+            modelTotals: modelTotals, sessionStats: sessionStats,
+            cost: PriceCard.bundled.cost(of: modelTotals)
+        )
 
         // The SENSORS deck: the five per-minute gauge curves for the day, plus the count memos from the
         // totals and the read-through meta facts (thermal changes, charging sessions, lifetime cycles).
@@ -242,13 +256,21 @@ final class GeneralLedgerViewModel: ObservableObject {
             selectedAuxiliary = nil
             selectedCognition = nil
             selectedSensors = nil
+            selectedComposite = nil
             return
         }
+        // The Composite is a day figure; an aggregate period carries none.
+        selectedComposite = nil
+        // The period's model rows in one batched query; pricing the summed rows equals combining the
+        // daily figures (costs are linear in the token counts), so no per-day cost queries are needed.
+        let modelTotals = (try? store.aiModelTotals(dayEpochs: group.dayEpochs)) ?? []
+        let periodCost = modelTotals.isEmpty ? nil : PriceCard.bundled.cost(of: modelTotals)
         selectedPeriodStory = PeriodStory.build(
             label: group.label,
             dayEpochs: group.dayEpochs,
             totalsByDay: totalsByDay,
-            stampsByDay: stampsByDay
+            stampsByDay: stampsByDay,
+            aiCost: periodCost
         )
 
         // The aggregate accessory accounts: sum the accessory totals and the distinct-host counts across
@@ -274,9 +296,11 @@ final class GeneralLedgerViewModel: ObservableObject {
         )
 
         // The aggregate COGNITION breakdown sums per-model totals across days; sessions are a day figure,
-        // so an aggregate carries no session memo.
-        let modelTotals = (try? store.aiModelTotals(dayEpochs: group.dayEpochs)) ?? []
-        selectedCognition = CognitionBreakdown.build(modelTotals: modelTotals, sessionStats: nil)
+        // so an aggregate carries no session memo. The cost is the same summary the period story carries.
+        selectedCognition = CognitionBreakdown.build(
+            modelTotals: modelTotals, sessionStats: nil,
+            cost: periodCost
+        )
 
         // The aggregate SENSORS deck: the summed count memos and no curves. The cycle count is a lifetime
         // fact read from its single read-through key.
@@ -616,6 +640,7 @@ struct GeneralLedgerView: View {
                     Text(DayLabel.full(dayEpoch: day))
                         .font(.system(.title3, design: .monospaced).weight(.semibold))
                     if let period = selectedPeriod { stampChip(period.state) }
+                    if let composite = vm.selectedComposite { compositeChip(composite) }
                 }
                 if let status = statusLine(day: day) {
                     Text(status)
@@ -640,10 +665,28 @@ struct GeneralLedgerView: View {
     }
 
     /// The dim status line under the date: unposted days say whether the period is still open or a past
-    /// period awaiting posting; a posted day says nothing, because its stamp chip already reads.
+    /// period awaiting posting (a posted day's stamp chip already reads), and the Composite's dropped-
+    /// component disclosure follows when a zero-baseline component left the mean.
     private func statusLine(day: Int64) -> String? {
-        guard vm.selectedReceipt == nil else { return nil }
-        return day == vm.todayEpoch ? "Period still open." : "Past period, unposted."
+        var parts: [String] = []
+        if vm.selectedReceipt == nil {
+            parts.append(day == vm.todayEpoch ? "Period still open." : "Past period, unposted.")
+        }
+        if let disclosure = vm.selectedComposite?.disclosure {
+            parts.append("Composite: \(disclosure).")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    /// The day's COMPOSITE chip: the index against the 28-day median, dim (hairline outline) while the
+    /// baseline is still collecting or empty. Plain dial ink when indexed — never brass, which stays
+    /// reserved for BALANCED.
+    private func compositeChip(_ composite: Composite) -> some View {
+        let indexed: Bool
+        if case .indexed = composite { indexed = true } else { indexed = false }
+        return chip("\(Composite.chipLabel) \(composite.chipValue)",
+                    color: indexed ? dial : dim, filled: indexed)
+            .help(composite.receiptLine)
     }
 
     /// "Close the books" for an unposted day, or the Share / Save receipt toolbar plus a View-receipt
@@ -788,7 +831,8 @@ struct GeneralLedgerView: View {
     }
 
     /// The COGNITION card's BY MODEL breakdown: the top models with amber token bars against the busiest
-    /// model, and the day's session memo. Renders nothing when no model was booked.
+    /// model, each row's notional cost, the period's cost line with its list-price footnote, and the
+    /// day's session memo. Renders nothing when no model was booked.
     @ViewBuilder
     private func cognitionExtras() -> some View {
         if let cog = vm.selectedCognition, !cog.models.isEmpty {
@@ -811,8 +855,35 @@ struct GeneralLedgerView: View {
                                 .monospacedDigit()
                                 .foregroundStyle(dim)
                                 .frame(width: 60, alignment: .trailing)
+                            if let costLabel = row.costLabel {
+                                Text(costLabel)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .monospacedDigit()
+                                    .foregroundStyle(dim)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                                    .frame(width: 58, alignment: .trailing)
+                            }
                         }
                     }
+                }
+                if let costLine = cog.costLine {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Notional cost (list)")
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(dim)
+                        Spacer(minLength: 8)
+                        Text(costLine)
+                            .font(.system(.caption2, design: .monospaced))
+                            .monospacedDigit()
+                            .foregroundStyle(dial.opacity(0.85))
+                    }
+                }
+                if let disclosure = cog.costDisclosure {
+                    // The one list-price framing this surface carries, plus the unpriced disclosure.
+                    Text(disclosure)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(dim)
                 }
                 if let memo = cog.sessionMemo {
                     Text(memo)

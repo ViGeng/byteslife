@@ -58,6 +58,10 @@ public enum ReceiptComposer {
     ///     not the period being closed.
     ///   - auxDistinctHosts: distinct remote hosts contacted, for the AUXILIARY section.
     ///   - auxTopApp: the day's most-focused app (short name and seconds), or nil when none is on file.
+    ///   - aiCost: the day's notional AI cost at list prices, booked in the Token Account with its as-of
+    ///     framing and the unpriced disclosure. Nil omits the lines (receipts composed before iteration
+    ///     10 never carried them; stored receipts re-render verbatim regardless).
+    ///   - composite: the day's BYTELIFE COMPOSITE, booked as one line in the totals block. Nil omits it.
     public static func compose(
         dayEpoch: Int64,
         totals: [MetricKind: Int64],
@@ -67,7 +71,9 @@ public enum ReceiptComposer {
         calendar: Calendar = .current,
         closedInArrears: Bool = false,
         auxDistinctHosts: Int = 0,
-        auxTopApp: (name: String, seconds: Int64)? = nil
+        auxTopApp: (name: String, seconds: Int64)? = nil,
+        aiCost: AICostSummary? = nil,
+        composite: Composite? = nil
     ) -> Receipt {
         let ledger = Ledger(totals: totals)
         let stamp = closedInArrears ? ReceiptStamp.postedInArrears : stamp(for: availability)
@@ -75,13 +81,13 @@ public enum ReceiptComposer {
         var body: [String] = []
         body += masthead()
         body += header(dayEpoch: dayEpoch, machineName: machineName, calendar: calendar)
-        body += tokenSection(ledger)
+        body += tokenSection(ledger, cost: aiCost)
         body += trafficSection(ledger)
         body += storageSection(ledger)
         body += hoursSection(ledger)
         body += laborSection(ledger)
         body += auxiliarySection(totals: totals, distinctHosts: auxDistinctHosts, topApp: auxTopApp)
-        body += totalsBlock(ledger)
+        body += totalsBlock(ledger, composite: composite)
         body += marginBlock(marginComment)
         body += stampBlock(stamp)
 
@@ -126,7 +132,7 @@ public enum ReceiptComposer {
         ]
     }
 
-    private static func tokenSection(_ ledger: Ledger) -> [String] {
+    private static func tokenSection(_ ledger: Ledger, cost: AICostSummary?) -> [String] {
         let account = ledger.account(.token)
         let rate: String
         if let r = ledger.tokenExchangeRate {
@@ -134,15 +140,25 @@ public enum ReceiptComposer {
         } else {
             rate = "n/a"
         }
-        return [
+        var lines = [
             LedgerAccountKind.token.title.uppercased(),
             entry("Tokens Payable", "Dr", ByteFormatting.grouped(account.debit)),
             entry("Tokens Receivable", "Cr", ByteFormatting.grouped(account.credit)),
             entry("Cache memo", "",
                   "\(ByteFormatting.tokens(ledger.cacheCreationTokens)) w / \(ByteFormatting.tokens(ledger.cacheReadTokens)) r"),
             entry("Exchange rate", "", rate),
-            thinRule(),
         ]
+        // A valuation, not a bill: what the day's tokens would cost at pay-as-you-go list prices, with
+        // the card's as-of date, and tokens no card prices disclosed rather than silently zeroed.
+        if let cost {
+            lines.append(entry("Notional cost (list)", "", PriceCard.dollars(cost.total)))
+            lines.append(entry("At list prices as of", "", cost.asOf))
+            if cost.unpricedTokens > 0 {
+                lines.append(entry("Tokens unpriced", "", ByteFormatting.tokens(cost.unpricedTokens)))
+            }
+        }
+        lines.append(thinRule())
+        return lines
     }
 
     private static func trafficSection(_ ledger: Ledger) -> [String] {
@@ -213,8 +229,18 @@ public enum ReceiptComposer {
         ]
     }
 
-    private static func totalsBlock(_ ledger: Ledger) -> [String] {
-        [row("POSTED BYTE VOLUME", ByteFormatting.bytes(ledger.runningBalance)), rule()]
+    private static func totalsBlock(_ ledger: Ledger, composite: Composite?) -> [String] {
+        var lines = [row("POSTED BYTE VOLUME", ByteFormatting.bytes(ledger.runningBalance))]
+        if let composite {
+            // "Composite vs 28-day median: 132", or the honest collecting/no-baseline wording; the
+            // dropped-component disclosure follows when a zero-baseline component left the mean.
+            lines += wrap(composite.receiptLine, prefix: "")
+            if let disclosure = composite.disclosure {
+                lines += wrap(disclosure, prefix: "")
+            }
+        }
+        lines.append(rule())
+        return lines
     }
 
     private static func marginBlock(_ comment: String) -> [String] {

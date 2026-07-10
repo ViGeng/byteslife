@@ -70,8 +70,23 @@ public struct AIModelTotal: Equatable, Sendable {
         self.cacheRead = cacheRead
     }
 
-    /// All four channels summed, the natural weight for ranking the top models.
-    public var total: Int64 { input + output + cacheCreation + cacheRead }
+    /// The sources whose recorded `input` channel already CONTAINS their `cacheRead` tokens: Codex's
+    /// `input_tokens` and Gemini's per-message `input` both include the cached prompt portion (verified
+    /// against real transcripts, where total = input + output), while Claude transcripts book the cache
+    /// channels separately from input. Readers must not add `cacheRead` on top of `input` for these rows.
+    public static let cacheInclusiveInputSources: Set<String> = ["codex", "gemini"]
+
+    /// Whether this row's `input` already contains its `cacheRead` tokens (see
+    /// `cacheInclusiveInputSources`).
+    public var inputIncludesCacheRead: Bool { Self.cacheInclusiveInputSources.contains(source) }
+
+    /// The uncached prompt tokens: `input` net of the cached subset for cache-inclusive sources, `input`
+    /// verbatim otherwise. Clamped at zero so a malformed row can never book negative tokens.
+    public var uncachedInput: Int64 { inputIncludesCacheRead ? max(0, input - cacheRead) : input }
+
+    /// Every channel counted exactly once (a cache-inclusive source's `cacheRead` lives inside `input`),
+    /// the natural weight for ranking the top models.
+    public var total: Int64 { uncachedInput + output + cacheCreation + cacheRead }
 }
 
 /// Session statistics for a single day: how many sessions opened that day and how long they ran.

@@ -35,7 +35,7 @@ Five core families, each reported in or alongside literal byte counts:
 
 - **Traffic** — network bytes sent and received.
 - **Storage** — disk bytes written and read.
-- **Cognition** — AI tokens prompted and generated, read from local Claude Code, Codex CLI, and Gemini CLI logs, broken down by model and session.
+- **Cognition** — AI tokens prompted and generated, read from local Claude Code, Codex CLI, and Gemini CLI logs, broken down by model and session, and valued as a notional dollar cost at pay-as-you-go list prices (a bundled price card with an explicit as-of date; unpriced models are disclosed, never zeroed).
 - **Exposure** — time spent in front of an awake display.
 - **Mechanics** — keystrokes, clicks, scrolls, and cumulative mouse travel.
 
@@ -87,7 +87,7 @@ The Ledger framing is not decorative. Three of the five families really are pair
 
 ## Status
 
-ByteLife is at version 0.8.1 and actively developed. Traffic, storage, cognition, exposure, and mechanics all collect and render; the Ledger, reconcile ritual, receipts, and General Ledger window are in place. On the roadmap: notional AI dollar cost at list prices, a composite "how busy was today" index, git and calendar activity, and multi-device support. It has no cloud sync, accounts, goals, streaks, or telemetry, by design.
+ByteLife is at version 0.9.0 and actively developed. Traffic, storage, cognition, exposure, and mechanics all collect and render; the Ledger, reconcile ritual, receipts, and General Ledger window are in place. Version 0.9.0 added the honest numbers: a steady trailing-window token rate on the COGNITION dial, the notional AI dollar cost at list prices, and the BYTELIFE COMPOSITE, a market-style index that compares each day against its own 28-day median instead of pretending tokens and bytes can be added. On the roadmap: git and calendar activity, and multi-device support. It has no cloud sync, accounts, goals, streaks, or telemetry, by design.
 
 ---
 

@@ -76,15 +76,16 @@ final class MeterBridgeTests: XCTestCase {
     }
 
     func testCognitionRateIsTokensPerMinuteExcludingCache() {
-        // 600 input + 400 output = 1000 real tokens over 2 seconds -> 30000 tok/min raw. Cache tokens
-        // are present but must not enter the rate. First EMA step from 0 halves it to 15000.
+        // 600 input + 400 output = 1000 real tokens landed within the trailing window; cache tokens are
+        // present but must not enter the rate. The windowed rate reads 1000 tokens over the 90-second
+        // (1.5-minute) window: 666.67 tok/min, a sustained figure, never the 2-second-delta spike.
         let previous = snap(
             [.aiInputTokens: 0, .aiOutputTokens: 0, .aiCacheReadTokens: 0], at: t0)
         let current = snap(
             [.aiInputTokens: 600, .aiOutputTokens: 400, .aiCacheReadTokens: 9_000_000],
             at: t0.addingTimeInterval(2))
         let cognition = channel(build(current: current, previous: previous), .cognition)
-        XCTAssertEqual(cognition.rate, 15_000, accuracy: 0.001)
+        XCTAssertEqual(cognition.rate, 1_000 / 1.5, accuracy: 0.001)
     }
 
     func testFirstPollHasNoRateOrPeak() {
@@ -271,6 +272,167 @@ final class MeterBridgeTests: XCTestCase {
             previous: snap([.networkBytesIn: 0], at: t0)
         )
         XCTAssertEqual(channel(bridge, .traffic).peak, 50_000, accuracy: 0.001)
+    }
+
+    // MARK: - COGNITION trailing-window rate
+
+    /// Drives successive builds over (offset seconds, cumulative token total) readings, threading the
+    /// previous snapshot and the carried state exactly as the view model does. Returns every COGNITION
+    /// rate observed (oldest first) and the final bridge.
+    private func runCognitionPolls(
+        _ readings: [(t: TimeInterval, total: Int64)]
+    ) -> (rates: [Double], bridge: MeterBridge) {
+        var state = MeterState.initial
+        var previous: MeterSnapshot?
+        var rates: [Double] = []
+        var bridge: MeterBridge!
+        for reading in readings {
+            let current = snap([.aiInputTokens: reading.total], at: t0.addingTimeInterval(reading.t))
+            bridge = build(current: current, previous: previous, priorState: state)
+            rates.append(channel(bridge, .cognition).rate)
+            previous = current
+            state = bridge.state
+        }
+        return (rates, bridge)
+    }
+
+    func testCognitionBurstThenGapReadsSteadyRateAcrossTheGap() {
+        // The agentic landing pattern: 600-token messages land at t=20, 40, and 60 while the panel polls
+        // every 2 seconds. A delta EMA would spike on each landing and decay toward zero within a few
+        // ticks, so most glances would read idle; the windowed rate holds (tokens in the window) / 1.5
+        // min steady across every gap.
+        var readings: [(t: TimeInterval, total: Int64)] = []
+        for i in 0...44 {  // t = 0, 2, ..., 88
+            let t = Double(i) * 2
+            let total: Int64 = t >= 60 ? 1_800 : t >= 40 ? 1_200 : t >= 20 ? 600 : 0
+            readings.append((t, total))
+        }
+        let (rates, bridge) = runCognitionPolls(readings)
+        XCTAssertEqual(rates[10], 400, accuracy: 0.001)   // t=20: the first landing, 600/1.5
+        XCTAssertEqual(rates[19], 400, accuracy: 0.001)   // t=38: 18 s into the gap, unchanged
+        XCTAssertEqual(rates[21], 800, accuracy: 0.001)   // t=42: two landings in the window
+        XCTAssertEqual(rates[29], 800, accuracy: 0.001)   // t=58: steady across the second gap
+        XCTAssertEqual(rates[44], 1_200, accuracy: 0.001) // t=88: all three landings in the window
+        XCTAssertTrue(channel(bridge, .cognition).isLive)
+    }
+
+    func testCognitionDecaysToZeroNinetySecondsAfterTheLastLanding() {
+        // One 3000-token landing at t=20, then silence. The windowed rate holds 2000 tok/min while the
+        // landing stays inside the trailing 90 seconds, then reads exactly zero on the first poll past
+        // t=110 — a true zero, no asymptote and no snap needed.
+        var readings: [(t: TimeInterval, total: Int64)] = []
+        for i in 0...60 {  // t = 0, 2, ..., 120
+            let t = Double(i) * 2
+            readings.append((t, t >= 20 ? 3_000 : 0))
+        }
+        let (rates, bridge) = runCognitionPolls(readings)
+        XCTAssertEqual(rates[10], 2_000, accuracy: 0.001)  // t=20: the landing
+        XCTAssertEqual(rates[54], 2_000, accuracy: 0.001)  // t=108: still inside the window
+        XCTAssertEqual(rates[55], 0)                       // t=110: the landing exits the window
+        XCTAssertEqual(rates[60], 0)                       // and the rate stays exactly zero
+        let cognition = channel(bridge, .cognition)
+        XCTAssertFalse(cognition.isLive)
+        XCTAssertEqual(cognition.peak, 2_000, accuracy: 0.001)  // the session peak survives the decay
+    }
+
+    func testCognitionTrailTrimsToTheWindowPlusOneAnchor() {
+        // Five minutes of 2-second polls: the carried trail stays bounded. Every point after the first
+        // sits inside the trailing window, and exactly one anchor rides at or beyond the boundary so the
+        // windowed delta always spans the full 90 seconds.
+        var readings: [(t: TimeInterval, total: Int64)] = []
+        for i in 0...150 { readings.append((Double(i) * 2, Int64(i) * 10)) }  // t = 0..300
+        let (_, bridge) = runCognitionPolls(readings)
+        let trail = bridge.state.tokenTrail
+        let now = t0.addingTimeInterval(300)
+        let cutoff = now.addingTimeInterval(-MeterBridge.cognitionWindowSeconds)
+        XCTAssertEqual(trail.count, 46)  // 45 in-window points at the 2 s cadence + 1 boundary anchor
+        XCTAssertLessThanOrEqual(trail.first!.timestamp, cutoff)
+        XCTAssertTrue(trail.dropFirst().allSatisfy { $0.timestamp > cutoff })
+        XCTAssertEqual(trail.last!.timestamp, now)
+        // A steady 10 tokens per 2 seconds reads exactly 300 tok/min off the full window.
+        XCTAssertEqual(channel(bridge, .cognition).rate, 300, accuracy: 0.001)
+    }
+
+    func testCognitionPeakIsTheMaximumSustainedWindowedRate() {
+        // A 30,000-token burst lands between two 2-second polls. The instantaneous delta would read
+        // 900,000 tok/min; the windowed rate reads the sustained 20,000, and that is what the session
+        // peak records and holds through the decay.
+        var readings: [(t: TimeInterval, total: Int64)] = [(0, 0)]
+        for i in 1...60 { readings.append((Double(i) * 2, 30_000)) }  // burst at t=2, silence to t=120
+        let (rates, bridge) = runCognitionPolls(readings)
+        XCTAssertEqual(rates.max()!, 20_000, accuracy: 0.001)
+        let cognition = channel(bridge, .cognition)
+        XCTAssertEqual(cognition.rate, 0)  // the burst left the window at t=92
+        XCTAssertEqual(cognition.peak, 20_000, accuracy: 0.001)
+        XCTAssertEqual(cognition.peakReadout, ByteFormatting.tokenRate(20_000))
+    }
+
+    func testCognitionThirtySecondBackgroundTickStillFeedsRateAndPeak() {
+        // The warm background carry polls every 30 seconds. The windowed rate is anchored on the trail,
+        // not the poll delta, so a background reading is as honest as a live one: 3000 tokens across a
+        // 30-second gap read 2000 tok/min sustained — and, unlike the gap-gated byte channels, the
+        // COGNITION peak may take it, because a windowed figure needs no laundering guard.
+        let (rates, bridge) = runCognitionPolls([(0, 0), (30, 3_000)])
+        XCTAssertEqual(rates[1], 2_000, accuracy: 0.001)
+        XCTAssertEqual(channel(bridge, .cognition).peak, 2_000, accuracy: 0.001)
+        XCTAssertTrue(channel(bridge, .cognition).isLive)
+    }
+
+    func testCognitionColdReopenStartsAtZeroWhileThePeakPersists() {
+        // A burn establishes a rate and a peak; the panel then reopens past the warm window, so the view
+        // model resets smoothing and drops the previous snapshot. The trail forgets with the smoothing:
+        // the reopened first tick reads zero rather than a phantom of the stale window, and the session
+        // peak stands.
+        let (_, burn) = runCognitionPolls([(0, 0), (2, 1_500), (4, 1_500)])
+        XCTAssertEqual(channel(burn, .cognition).rate, 1_000, accuracy: 0.001)
+
+        let reopened = burn.state.resettingSmoothing()
+        XCTAssertTrue(reopened.tokenTrail.isEmpty)
+        XCTAssertEqual(reopened.peakRate[.cognition] ?? 0, 1_000, accuracy: 0.001)
+
+        // The cold first tick: no previous snapshot, totals unchanged across the closed gap.
+        let cold = build(
+            current: snap([.aiInputTokens: 1_500], at: t0.addingTimeInterval(120)),
+            priorState: reopened
+        )
+        let cognition = channel(cold, .cognition)
+        XCTAssertEqual(cognition.rate, 0)
+        XCTAssertFalse(cognition.isLive)
+        XCTAssertEqual(cognition.peak, 1_000, accuracy: 0.001)
+
+        // The next 2-second tick measures only what lands after the reopen, never the closed gap.
+        let next = build(
+            current: snap([.aiInputTokens: 1_650], at: t0.addingTimeInterval(122)),
+            previous: snap([.aiInputTokens: 1_500], at: t0.addingTimeInterval(120)),
+            priorState: cold.state
+        )
+        XCTAssertEqual(channel(next, .cognition).rate, 150 / 1.5, accuracy: 0.001)
+    }
+
+    func testCognitionMidnightTotalsResetRestartsTheTrail() {
+        // Today's totals reset at midnight, so the cumulative reading drops. The trail must restart at
+        // the new counter instead of measuring against points from a counter that no longer exists: the
+        // first post-midnight tick reads zero, then new landings measure cleanly.
+        let (rates, bridge) = runCognitionPolls([(0, 0), (2, 6_000), (4, 0), (6, 900)])
+        XCTAssertEqual(rates[1], 4_000, accuracy: 0.001)
+        XCTAssertEqual(rates[2], 0)
+        XCTAssertEqual(rates[3], 600, accuracy: 0.001)
+        // The trail restarted: its oldest point is the post-reset reading.
+        XCTAssertEqual(bridge.state.tokenTrail.first,
+                       TokenTrailPoint(timestamp: t0.addingTimeInterval(4), total: 0))
+    }
+
+    func testCognitionSameInstantRebuildRereadsTheStandingTrail() {
+        // A zero-elapsed rebuild at the same timestamp recomputes the same windowed rate off the
+        // standing trail instead of appending a duplicate point.
+        let (_, first) = runCognitionPolls([(0, 0), (30, 3_000)])
+        let again = build(
+            current: snap([.aiInputTokens: 3_000], at: t0.addingTimeInterval(30)),
+            previous: snap([.aiInputTokens: 0], at: t0),
+            priorState: first.state
+        )
+        XCTAssertEqual(channel(again, .cognition).rate, 2_000, accuracy: 0.001)
+        XCTAssertEqual(again.state.tokenTrail, first.state.tokenTrail)
     }
 
     // MARK: - Availability tags

@@ -40,6 +40,17 @@ final class CognitionBreakdownTests: XCTestCase {
         XCTAssertEqual(breakdown.models.map(\.label), ["claude/haiku-4-5"])
     }
 
+    /// A cache-inclusive source (Codex, Gemini) records cached tokens inside its input channel; the bar
+    /// still reads only the uncached prompted tokens plus output.
+    func testCacheInclusiveInputExcludedFromBars() {
+        let breakdown = CognitionBreakdown.build(
+            modelTotals: [AIModelTotal(source: "codex", model: "gpt-5.3-codex",
+                                       input: 1_000, output: 200, cacheCreation: 0, cacheRead: 900)],
+            sessionStats: nil
+        )
+        XCTAssertEqual(breakdown.models.first?.tokens, 300)   // (1,000 - 900) + 200
+    }
+
     /// The top list is capped by the limit.
     func testTopListIsCapped() {
         let totals = (0..<8).map { model("codex", "gpt-m\($0)", input: Int64(100 * ($0 + 1)), output: 0) }
@@ -67,5 +78,49 @@ final class CognitionBreakdownTests: XCTestCase {
         let breakdown = CognitionBreakdown.build(modelTotals: [], sessionStats: nil)
         XCTAssertTrue(breakdown.models.isEmpty)
         XCTAssertNil(breakdown.sessionMemo)
+    }
+
+    /// With a cost summary supplied, each displayed row carries its own cost figure, an unmatched model
+    /// reads "unpriced" (disclosed, never a silent zero), and the card-level line and footnote carry the
+    /// priced total, the list-price framing, and the unpriced disclosure.
+    func testCostColumnCardLineAndDisclosure() {
+        let rows = [
+            model("claudeCode", "claude-haiku-4-5", input: 1_000_000, output: 0),
+            model("codex", "mystery-9", input: 500, output: 500),
+        ]
+        let cost = PriceCard.bundled.cost(of: rows)
+        let breakdown = CognitionBreakdown.build(modelTotals: rows, sessionStats: nil, cost: cost)
+
+        // haiku: 1M input tokens at $1 per million reads "$1.00"; the unknown model reads "unpriced".
+        XCTAssertEqual(breakdown.models.first { $0.label == "claude/haiku-4-5" }?.costLabel, "$1.00")
+        XCTAssertEqual(breakdown.models.first { $0.label == "codex/mystery-9" }?.costLabel, "unpriced")
+        XCTAssertEqual(breakdown.costLine, "$1.00")
+        XCTAssertEqual(breakdown.costDisclosure,
+                       "at list prices, as of 2026-07-07 · 1.0K tokens unpriced")
+    }
+
+    /// Without a cost summary every cost surface stays off: no column labels, no line, no footnote.
+    func testCostSurfacesAbsentWithoutASummary() {
+        let breakdown = CognitionBreakdown.build(
+            modelTotals: [model("claudeCode", "claude-haiku-4-5", input: 100, output: 100)],
+            sessionStats: nil
+        )
+        XCTAssertNil(breakdown.models.first?.costLabel)
+        XCTAssertNil(breakdown.costLine)
+        XCTAssertNil(breakdown.costDisclosure)
+    }
+
+    /// A cache-only model is dropped from the bars but its cost still counts in the card's total.
+    func testCacheOnlyModelStillCountsInTheCostLine() {
+        let rows = [
+            model("claudeCode", "claude-haiku-4-5", input: 0, output: 0, cache: 10_000_000),
+            model("claudeCode", "claude-opus-4-8", input: 1_000_000, output: 0),
+        ]
+        let cost = PriceCard.bundled.cost(of: rows)
+        let breakdown = CognitionBreakdown.build(modelTotals: rows, sessionStats: nil, cost: cost)
+        XCTAssertEqual(breakdown.models.map(\.label), ["claude/opus-4-8"])
+        // opus input $5.00 plus haiku cache 10M x ($1.25 write + $0.10 read) per million = $18.50.
+        XCTAssertEqual(breakdown.costLine, "$18.50")
+        XCTAssertEqual(breakdown.costDisclosure, "at list prices, as of 2026-07-07")
     }
 }

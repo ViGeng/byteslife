@@ -32,8 +32,17 @@ public struct Reconciler {
         if try store.reconciliation(forDayEpoch: dayEpoch) != nil { return nil }
 
         let totals = try store.totals(forDayEpoch: dayEpoch)
-        let trailing = try trailingTotals(before: dayEpoch)
-        let comment = MarginNotes.comment(today: totals, trailing: trailing)
+        // One trailing fetch serves both readers: the Composite baseline spans up to 28 recorded days,
+        // and the margin engine reads the newest 7 of the same map.
+        let (trailingDays, history) = try trailingHistory(before: dayEpoch)
+        let composite = Composite.build(dayEpoch: dayEpoch, todayTotals: totals, history: history)
+        let trailing = trailingDays.prefix(Reconciler.trailingWindow).map { history[$0] ?? [:] }
+        let comment = MarginNotes.comment(today: totals, trailing: trailing, composite: composite)
+        // The day's notional AI cost at bundled list prices, booked in the receipt's Token Account.
+        // This read must throw like `totals` does: swallowing a storage error here would immortalize a
+        // silently zeroed "Notional cost (list) $0.00" in the insert-once receipt. Aborting lets a later
+        // close retry with the real rows. (An empty row set on a healthy store is a genuine $0.00 day.)
+        let aiCost = PriceCard.bundled.cost(of: try store.aiModelTotals(dayEpoch: dayEpoch))
         // The accessory figures the AUXILIARY section books: distinct hosts and the day's top app come
         // from their own tables (the samples dictionary cannot carry the per-app or per-host dimension).
         let distinctHosts = (try? store.distinctHosts(dayEpoch: dayEpoch)) ?? 0
@@ -49,7 +58,9 @@ public struct Reconciler {
             calendar: calendar,
             closedInArrears: closedInArrears,
             auxDistinctHosts: distinctHosts,
-            auxTopApp: topApp
+            auxTopApp: topApp,
+            aiCost: aiCost,
+            composite: composite
         )
         let reconciliation = Reconciliation(
             dayEpoch: dayEpoch,
@@ -64,14 +75,18 @@ public struct Reconciler {
         return inserted ? reconciliation : nil
     }
 
-    /// The recorded days immediately before `dayEpoch`, newest first up to `trailingWindow`, as totals
-    /// dictionaries in the order the margin engine expects.
-    private func trailingTotals(before dayEpoch: Int64) throws -> [[MetricKind: Int64]] {
-        let days = try store.dayEpochsWithData()
-            .filter { $0 < dayEpoch }
-            .prefix(Reconciler.trailingWindow)
-        guard !days.isEmpty else { return [] }
-        let byDay = try store.totals(forDayEpochs: Array(days))
-        return days.map { byDay[$0] ?? [:] }
+    /// The recorded days immediately before `dayEpoch`, newest first up to the Composite's 28-day
+    /// baseline window, with their totals map. The margin engine takes the newest `trailingWindow` days
+    /// of the same fetch.
+    private func trailingHistory(
+        before dayEpoch: Int64
+    ) throws -> (days: [Int64], history: [Int64: [MetricKind: Int64]]) {
+        let days = Array(
+            try store.dayEpochsWithData()
+                .filter { $0 < dayEpoch }
+                .prefix(Composite.baselineWindow)
+        )
+        guard !days.isEmpty else { return ([], [:]) }
+        return (days, try store.totals(forDayEpochs: days))
     }
 }

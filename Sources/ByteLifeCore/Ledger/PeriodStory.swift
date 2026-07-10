@@ -63,6 +63,10 @@ public struct PeriodStory: Equatable, Sendable {
     public let trafficPerDay: [Int64]
     /// The Storage account's per-day amounts, for the hero bar chart's violet bars.
     public let storagePerDay: [Int64]
+    /// The period's notional AI cost. Costs are linear in the token counts, so pricing the period's
+    /// summed model rows equals combining the daily summaries; the caller prices whichever it has in
+    /// hand. Nil when the caller supplied none, which keeps cost off the period surfaces.
+    public let aiCost: AICostSummary?
 
     /// The total number of member days.
     public var dayCount: Int { days.count }
@@ -73,7 +77,8 @@ public struct PeriodStory: Equatable, Sendable {
 
     public init(label: String, days: [PeriodDay], cards: [PeriodStoryCard],
                 postedByteVolume: String, postedCount: Int,
-                trafficPerDay: [Int64], storagePerDay: [Int64]) {
+                trafficPerDay: [Int64], storagePerDay: [Int64],
+                aiCost: AICostSummary? = nil) {
         self.label = label
         self.days = days
         self.cards = cards
@@ -81,17 +86,21 @@ public struct PeriodStory: Equatable, Sendable {
         self.postedCount = postedCount
         self.trafficPerDay = trafficPerDay
         self.storagePerDay = storagePerDay
+        self.aiCost = aiCost
     }
 
     /// Builds the story for a period from its member days and the per-day totals map. `dayEpochs` may be
     /// in any order; the story orders its days and per-day series oldest-first. Kinds and days absent from
-    /// `totalsByDay` read as zero, so a structurally complete story always results.
+    /// `totalsByDay` read as zero, so a structurally complete story always results. `aiCost` is the
+    /// period's notional cost summary, priced by the caller over the period's summed model rows (which
+    /// equals summing the daily figures, costs being linear in the token counts).
     public static func build(
         label: String,
         dayEpochs: [Int64],
         totalsByDay: [Int64: [MetricKind: Int64]],
         stampsByDay: [Int64: String] = [:],
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        aiCost: AICostSummary? = nil
     ) -> PeriodStory {
         let ordered = dayEpochs.sorted()
 
@@ -132,7 +141,8 @@ public struct PeriodStory: Equatable, Sendable {
             postedByteVolume: ByteFormatting.bytes(ledger.runningBalance),
             postedCount: ordered.reduce(0) { $0 + (stampsByDay[$1] != nil ? 1 : 0) },
             trafficPerDay: cards.first { $0.kind == .traffic }?.perDay ?? [],
-            storagePerDay: cards.first { $0.kind == .storage }?.perDay ?? []
+            storagePerDay: cards.first { $0.kind == .storage }?.perDay ?? [],
+            aiCost: aiCost
         )
     }
 }

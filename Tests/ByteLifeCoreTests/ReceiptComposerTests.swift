@@ -30,8 +30,36 @@ final class ReceiptComposerTests: XCTestCase {
     private static let goldenDistinctHosts = 27
     private static let goldenTopApp: (name: String, seconds: Int64) = (name: "Xcode", seconds: 9_000)
 
-    private static let goldenComment =
-        "Network traffic up 340% versus the trailing average. No judgment. Filing it."
+    /// The day's notional AI cost behind the golden Token Account lines: one priced Anthropic model
+    /// carrying the token totals above (4,000 x $10 + 7,000 x $50 + 3.4M x $1.00 + 1.2M x $12.50, per
+    /// million: $18.79) plus a local model no card prices, so the golden receipt books the unpriced
+    /// disclosure (760 tokens) too.
+    private static let goldenCost = PriceCard.bundled.cost(of: [
+        AIModelTotal(source: "claudeCode", model: "claude-fable-5-20260501",
+                     input: 4_000, output: 7_000, cacheCreation: 1_200_000, cacheRead: 3_400_000),
+        AIModelTotal(source: "gemini", model: "local-gemma",
+                     input: 200, output: 560, cacheCreation: 0, cacheRead: 0),
+    ])
+
+    /// The golden trailing day: exactly half of the golden day's figures, recorded seven times, so
+    /// every Composite component ratio is 2.0 and the index reads 200.
+    private static let goldenTrailingDay = goldenTotals.mapValues { $0 / 2 }
+
+    /// The golden Composite, built through the real path over the trailing history above.
+    private static let goldenComposite: Composite = {
+        var history: [Int64: [MetricKind: Int64]] = [:]
+        for i in 1...7 { history[1_783_296_000 - Int64(i) * 86_400] = goldenTrailingDay }
+        return Composite.build(dayEpoch: 1_783_296_000, todayTotals: goldenTotals, history: history)
+    }()
+
+    /// The golden margin comment comes from the real rule engine over the same inputs, so the golden
+    /// receipt is a combination the production close path can actually emit: an index of 200 fires the
+    /// composite rule, which outranks the single-series variance rule.
+    private static let goldenComment = MarginNotes.comment(
+        today: goldenTotals,
+        trailing: Array(repeating: goldenTrailingDay, count: 7),
+        composite: goldenComposite
+    )
 
     private func utcCalendar() -> Calendar {
         var cal = Calendar(identifier: .gregorian)
@@ -54,7 +82,9 @@ final class ReceiptComposerTests: XCTestCase {
             marginComment: Self.goldenComment,
             calendar: utcCalendar(),
             auxDistinctHosts: Self.goldenDistinctHosts,
-            auxTopApp: Self.goldenTopApp
+            auxTopApp: Self.goldenTopApp,
+            aiCost: Self.goldenCost,
+            composite: Self.goldenComposite
         )
     }
 
@@ -104,6 +134,61 @@ final class ReceiptComposerTests: XCTestCase {
         let expected = try String(contentsOf: url, encoding: .utf8)
         // The fixture is stored with a trailing newline; the composed text has none.
         XCTAssertEqual(composeGolden().text + "\n", expected)
+    }
+
+    // MARK: - Notional cost and Composite lines
+
+    func testTokenSectionBooksNotionalCostAtListPrices() {
+        let text = composeGolden().text
+        XCTAssertTrue(text.contains("Notional cost (list)"))
+        XCTAssertTrue(text.contains("$18.79"))
+        // The list-price framing with the card's as-of date, once on the surface.
+        XCTAssertTrue(text.contains("At list prices as of"))
+        XCTAssertTrue(text.contains("2026-07-07"))
+        // The unpriced model's tokens are disclosed, never silently valued at zero.
+        XCTAssertTrue(text.contains("Tokens unpriced"))
+        XCTAssertTrue(text.contains("760"))
+    }
+
+    func testTotalsBlockBooksTheComposite() {
+        XCTAssertTrue(composeGolden().text.contains("Composite vs 28-day median: 200"))
+    }
+
+    func testCostAndCompositeChangeTheHash() {
+        let base = composeGolden().contentHash
+        let without = ReceiptComposer.compose(
+            dayEpoch: 1_783_296_000, totals: Self.goldenTotals, availability: allRunning(),
+            machineName: "studio.local", marginComment: Self.goldenComment, calendar: utcCalendar(),
+            auxDistinctHosts: Self.goldenDistinctHosts, auxTopApp: Self.goldenTopApp
+        )
+        XCTAssertNotEqual(without.contentHash, base)
+    }
+
+    /// A compose without the iteration-10 inputs keeps the earlier receipt shape: no cost lines and no
+    /// Composite line, so nothing about older compositions is silently re-narrated. The comment is a
+    /// literal here because the golden comment itself now speaks of the Composite.
+    func testWithoutCostAndCompositeTheLinesAreOmitted() {
+        let text = ReceiptComposer.compose(
+            dayEpoch: 1_783_296_000, totals: Self.goldenTotals, availability: allRunning(),
+            machineName: "studio.local",
+            marginComment: "Books balanced against the day. Nothing stands out. Filed as usual.",
+            calendar: utcCalendar()
+        ).text
+        XCTAssertFalse(text.contains("Notional cost"))
+        XCTAssertFalse(text.contains("Composite"))
+    }
+
+    /// A collecting-state Composite books its honest wording, wrapped to the tape width.
+    func testCollectingCompositeWrapsHonestly() {
+        let text = ReceiptComposer.compose(
+            dayEpoch: 1_783_296_000, totals: Self.goldenTotals, availability: allRunning(),
+            machineName: "studio.local", marginComment: Self.goldenComment, calendar: utcCalendar(),
+            composite: .collecting(recordedDays: 3)
+        ).text
+        // The long collecting line wraps at the tape width, so its halves land on adjacent lines.
+        XCTAssertTrue(text.contains("Composite vs 28-day median: collecting"))
+        XCTAssertTrue(text.contains("baseline (3 of 5 days)"))
+        XCTAssertTrue(text.split(separator: "\n").allSatisfy { $0.count <= 40 })
     }
 
     // MARK: - Auxiliary section

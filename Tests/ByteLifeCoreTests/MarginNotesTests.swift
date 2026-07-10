@@ -74,6 +74,42 @@ final class MarginNotesTests: XCTestCase {
         XCTAssertEqual(note.text, "Books balanced against the day. Nothing stands out. Filed as usual.")
     }
 
+    private func indexed(_ index: Int) -> Composite {
+        .indexed(CompositeReading(index: index, ratios: [], dropped: []))
+    }
+
+    func testCompositeRuleFiresHighAndOutranksVariance() {
+        // The trailing data would fire the variance rule; the exceptional Composite speaks first.
+        let trailing = Array(repeating: [MetricKind.networkBytesIn: mb(100)], count: 3)
+        let today: [MetricKind: Int64] = [.networkBytesIn: mb(500)]
+        let note = MarginNotes.note(today: today, trailing: trailing, composite: indexed(214))
+        XCTAssertEqual(note.rule, .composite)
+        XCTAssertEqual(note.text, "Composite at 214 versus the 28-day median. The whole book ran heavy. Filing it.")
+    }
+
+    func testCompositeRuleFiresLow() {
+        let note = MarginNotes.note(today: [:], trailing: [], composite: indexed(42))
+        XCTAssertEqual(note.rule, .composite)
+        XCTAssertEqual(note.text, "Composite at 42 versus the 28-day median. The whole book ran light. Filing it.")
+    }
+
+    func testCompositeRuleSilentInsideTheBand() {
+        // 199 and 51 sit strictly inside the factor-of-two band, so lower-priority rules speak.
+        for index in [199, 132, 100, 51] {
+            let note = MarginNotes.note(today: [:], trailing: [], composite: indexed(index))
+            XCTAssertNotEqual(note.rule, .composite, "index \(index) must not fire the composite rule")
+        }
+    }
+
+    func testCompositeRuleIgnoresNonIndexedStates() {
+        for composite in [Composite.collecting(recordedDays: 2), .noBaseline] {
+            let note = MarginNotes.note(today: [:], trailing: [], composite: composite)
+            XCTAssertNotEqual(note.rule, .composite)
+        }
+        // And a nil composite keeps the pre-iteration-10 order exactly.
+        XCTAssertEqual(MarginNotes.note(today: [:], trailing: []).rule, .quietDay)
+    }
+
     func testDeterministicAcrossRepeatedCalls() {
         let trailing = Array(repeating: [MetricKind.networkBytesIn: mb(100), .diskBytesRead: mb(80)], count: 5)
         let today: [MetricKind: Int64] = [.networkBytesIn: mb(450), .diskBytesRead: mb(400), .inputKeystrokes: 9_000]

@@ -31,6 +31,10 @@ final class DashboardViewModel: ObservableObject {
     /// Today's stored receipt once the day is closed, so the panel can render the immutable strip on
     /// posting and again whenever the user reopens it. Nil while the day is still open.
     @Published private(set) var todaysReceipt: Reconciliation?
+    /// Today's BYTELIFE COMPOSITE for the panel-header chip, rebuilt on the visible ticks from the totals
+    /// already fetched plus the cached trailing history. Starts (and honestly reads) as collecting until
+    /// the baseline holds enough recorded days.
+    @Published private(set) var composite: Composite = .collecting(recordedDays: 0)
     /// Whether ByteLife is currently registered to launch at login.
     @Published private(set) var launchAtLoginEnabled: Bool
     /// False once a register/unregister attempt failed (typically under `swift run`), so the footer can
@@ -68,6 +72,12 @@ final class DashboardViewModel: ObservableObject {
     private var channelWindows: [MeterChannelKind: MeterWindow] = [:]
     /// The hero flow chart's window, independent of the channel windows and likewise persisted.
     private var heroWindow: MeterWindow = .default
+    /// The Composite baseline history (up to 28 recorded days strictly before today), cached while the
+    /// panel stays open so no new query joins the 2-second hot path. The cache is dropped on every panel
+    /// open (not just at rollover): AI transcript backfill and cross-midnight sessions book samples onto
+    /// past days after launch, so a day-long cache would freeze a stale or still-collecting baseline. A
+    /// failed fetch stays nil so the next tick retries instead of latching an empty history all day.
+    private var compositeHistory: (dayEpoch: Int64, history: [Int64: [MetricKind: Int64]])?
 
     /// Completed minutes of history to fetch each tick: the deepest window any selected chart reads, so
     /// one indexed `minuteSeries` call serves every channel and the hero at once. At 24H this is 1440 rows
@@ -109,6 +119,8 @@ final class DashboardViewModel: ObservableObject {
     func panelDidAppear(live: Bool) {
         panelVisible = true
         liveMode = live
+        // Refetch the Composite baseline on each open, picking up any backfill onto past days.
+        compositeHistory = nil
         launchAtLoginEnabled = coordinator.isLaunchAtLoginEnabled
         if let previous = previousSnapshot, Date().timeIntervalSince(previous.timestamp) > Self.warmMaxAge {
             previousSnapshot = nil
@@ -258,7 +270,24 @@ final class DashboardViewModel: ObservableObject {
         // running-but-idle sensor reads a genuine 0. Unlocks come from the screen collector in the main
         // registry; energy, focus, files, and hosts are the accessory sensors.
         var strip: AuxiliaryStrip?
+        var compositeToday: Composite?
         if panelVisible {
+            // The COMPOSITE chip: today's totals (already in hand) against the cached trailing history,
+            // fetched once per panel-open session (and again at rollover). A failed read leaves the
+            // cache nil, so the chip shows collecting for one tick and the next tick retries.
+            if compositeHistory?.dayEpoch != dayEpoch {
+                compositeHistory = nil
+                if let recorded = try? coordinator.store.dayEpochsWithData() {
+                    let days = Array(recorded.filter { $0 < dayEpoch }.prefix(Composite.baselineWindow))
+                    if let history = try? coordinator.store.totals(forDayEpochs: days) {
+                        compositeHistory = (dayEpoch, history)
+                    }
+                }
+            }
+            compositeToday = Composite.build(
+                dayEpoch: dayEpoch, todayTotals: totals, history: compositeHistory?.history ?? [:]
+            )
+
             let topFocus = (try? coordinator.store.topFocus(dayEpoch: dayEpoch, limit: 1))?.first
             let aux = coordinator.auxiliaryRegistry
             let hostsRunning = aux.availability(forID: "hosts") == .running
@@ -325,6 +354,7 @@ final class DashboardViewModel: ObservableObject {
             if let bridge { self.meterBridge = bridge }
             if let ticker { self.tickerDeltas = ticker }
             if let strip { self.auxiliaryStrip = strip }
+            if let compositeToday { self.composite = compositeToday }
         }
         if animated {
             // Figures roll to their new values via the views' numeric content transitions.

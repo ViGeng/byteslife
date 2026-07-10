@@ -119,4 +119,34 @@ final class PeriodStoryTests: XCTestCase {
         XCTAssertEqual(story.postedCount, 0)
         XCTAssertEqual(story.coverageText, "0 of 1 days posted")
     }
+
+    /// The period's notional AI cost is priced by the caller over the period's summed model rows and
+    /// carried verbatim (equal to summing the daily figures, costs being linear in the token counts).
+    func testAICostCarriesThePeriodSummary() throws {
+        let d6 = epoch(2026, 7, 6)
+        let d7 = epoch(2026, 7, 7)
+        // haiku booked input on day 6 and output on day 7; the batched query returns their sums.
+        let periodCost = PriceCard.bundled.cost(of: [
+            AIModelTotal(source: "claudeCode", model: "claude-haiku-4-5",
+                         input: 1_000_000, output: 1_000_000, cacheCreation: 0, cacheRead: 0),
+            AIModelTotal(source: "codex", model: "mystery-9",
+                         input: 300, output: 200, cacheCreation: 0, cacheRead: 0),
+        ])
+        let story = PeriodStory.build(
+            label: "Week 28 · Jul 6–12",
+            dayEpochs: [d7, d6],
+            totalsByDay: [:],
+            calendar: utc,
+            aiCost: periodCost
+        )
+        let cost = try XCTUnwrap(story.aiCost)
+        // haiku: $1.00 input plus $5.00 output; mystery stays unpriced and disclosed.
+        XCTAssertEqual(PriceCard.dollars(cost.total), "$6.00")
+        XCTAssertEqual(cost.unpricedTokens, 500)
+    }
+
+    /// Without a cost summary the period carries no cost, keeping the surfaces honestly off.
+    func testAICostNilWhenNoneSupplied() {
+        XCTAssertNil(weekStory().aiCost)
+    }
 }

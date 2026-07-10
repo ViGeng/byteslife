@@ -11,6 +11,9 @@ TOKEN ACCOUNT
   Tokens Receivable   Cr           7,560
   Cache memo             1.2M w / 3.4M r
   Exchange rate                 1.80 : 1
+  Notional cost (list)            $18.79
+  At list prices as of        2026-07-07
+  Tokens unpriced                    760
 ----------------------------------------
 TRAFFIC ACCOUNT
   Bytes Remitted      Dr          1.5 GB
@@ -41,12 +44,13 @@ AUXILIARY
   Top App                   Xcode 2h 30m
 ----------------------------------------
 POSTED BYTE VOLUME                8.0 GB
+Composite vs 28-day median: 200
 ========================================
-> Network traffic up 340% versus the
-> trailing average. No judgment. Filing
-> it.
+> Composite at 200 versus the 28-day
+> median. The whole book ran heavy.
+> Filing it.
 ----------------------------------------
               * BALANCED *
 ----------------------------------------
-Content hash            4a31f2c61cf353e2
+Content hash            29703aa9b0955989
 ========================================

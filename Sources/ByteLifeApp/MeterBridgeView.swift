@@ -181,11 +181,12 @@ struct MeterBridgeView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack {
+            HStack(spacing: 6) {
                 Text("BYTELIFE // FLOW")
                     .font(.system(.caption2, design: .monospaced).weight(.semibold))
                     .foregroundStyle(LatticePalette.dim(scheme))
                 Spacer()
+                compositeChip
                 liveChip
             }
 
@@ -200,6 +201,35 @@ struct MeterBridgeView: View {
             combinedFlowLine
             hexTicker
         }
+    }
+
+    /// The COMPOSITE chip: today against the 28-day median as a market-style index. The value reads in
+    /// dial ink once indexed and dims to an em-dash while the baseline is collecting (or empty) — never
+    /// brass, which stays reserved for BALANCED, and never animated. The tooltip carries the full line.
+    private var compositeChip: some View {
+        let composite = viewModel.composite
+        let indexed: Bool
+        if case .indexed = composite { indexed = true } else { indexed = false }
+        return HStack(spacing: 4) {
+            Text(Composite.chipLabel)
+                .font(.system(size: 8, design: .monospaced).weight(.medium))
+                .foregroundStyle(LatticePalette.dim(scheme))
+            Text(composite.chipValue)
+                .font(.system(size: 9, design: .monospaced).weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(indexed ? LatticePalette.dial(scheme) : LatticePalette.dim(scheme))
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(
+            RoundedRectangle(cornerRadius: 3)
+                .fill(LatticePalette.card(scheme))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 3)
+                        .stroke(LatticePalette.hairline(scheme), lineWidth: 1)
+                )
+        )
+        .help([composite.receiptLine, composite.disclosure].compactMap { $0 }.joined(separator: " · "))
     }
 
     /// The LIVE chip is now a control. In live mode it lights amber only while some channel clears its

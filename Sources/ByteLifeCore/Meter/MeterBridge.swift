@@ -74,7 +74,8 @@ public enum MeterChannelKind: String, CaseIterable, Sendable {
     /// The smoothed rate at or above which the channel counts as live. Every live-gated light (glow,
     /// pulse, the panel's LIVE chip) reads `isLive`, never a raw `rate > 0`: the EMA only asymptotes
     /// toward zero, so a strict nonzero test would latch live forever after the last real byte.
-    /// EXPOSURE carries no rate and is never "live" in this sense.
+    /// COGNITION's threshold applies to its trailing-window rate, so it reads live while any tokens
+    /// landed within the window. EXPOSURE carries no rate and is never "live" in this sense.
     public var livenessThreshold: Double {
         switch self {
         case .traffic, .storage: return 512    // half a KB/s: below this a byte channel reads idle
@@ -109,24 +110,45 @@ public struct MeterSnapshot: Equatable, Sendable {
     }
 }
 
+/// One reading in COGNITION's trailing-window trail: a wall-clock instant paired with the day's
+/// cumulative input+output token total at that instant (cache tokens excluded, per the ledger's
+/// exchange-rate reasoning).
+public struct TokenTrailPoint: Equatable, Sendable {
+    public let timestamp: Date
+    public let total: Int64
+
+    public init(timestamp: Date, total: Int64) {
+        self.timestamp = timestamp
+        self.total = total
+    }
+}
+
 /// The carry state threaded between successive builds: each channel's last smoothed rate (the EMA's
-/// previous value), its session peak-hold, and the peak-only EMA that feeds it. The view model holds one
-/// of these and feeds it back in on every poll; it starts empty and resets to empty on relaunch
-/// (peak-hold is per-session in v1).
+/// previous value), its session peak-hold, the peak-only EMA that feeds it, and COGNITION's trailing
+/// token trail. The view model holds one of these and feeds it back in on every poll; it starts empty
+/// and resets to empty on relaunch (peak-hold is per-session in v1).
 public struct MeterState: Equatable, Sendable {
     public let smoothedRate: [MeterChannelKind: Double]
     public let peakRate: [MeterChannelKind: Double]
     /// The peak-only EMA: it integrates exclusively short-gap measurements and resets to zero whenever a
     /// long gap breaks the chain, so a background or gap average can never launder its residue into a
-    /// session peak through the display EMA's carry.
+    /// session peak through the display EMA's carry. COGNITION keeps this at zero: its windowed rate is
+    /// already a sustained figure, so its peak needs no gap gate.
     public let peakSmoothed: [MeterChannelKind: Double]
+    /// COGNITION's trail of recent (timestamp, input+output total) readings, spanning the trailing
+    /// window plus one anchor point at or beyond the boundary. AI tools land tokens in bursts at message
+    /// completion, so a 2-second-delta EMA reads one absurd spike then idle; the windowed rate over this
+    /// trail reads steady across the burst-then-gap pattern instead.
+    public let tokenTrail: [TokenTrailPoint]
 
     public init(smoothedRate: [MeterChannelKind: Double] = [:],
                 peakRate: [MeterChannelKind: Double] = [:],
-                peakSmoothed: [MeterChannelKind: Double] = [:]) {
+                peakSmoothed: [MeterChannelKind: Double] = [:],
+                tokenTrail: [TokenTrailPoint] = []) {
         self.smoothedRate = smoothedRate
         self.peakRate = peakRate
         self.peakSmoothed = peakSmoothed
+        self.tokenTrail = tokenTrail
     }
 
     /// The launch state: no prior smoothing, no peaks held.
@@ -134,9 +156,11 @@ public struct MeterState: Equatable, Sendable {
 
     /// The state to carry across a panel close and reopen: smoothing forgets, peaks persist. A reopened
     /// panel must cold-start its rates at zero (the first tick has no honest 2-second delta to show), but
-    /// the session peak-hold is a fact about the session, not about the panel being open.
+    /// the session peak-hold is a fact about the session, not about the panel being open. The token trail
+    /// forgets too: after a cold gap its points describe a window nobody watched, so COGNITION's windowed
+    /// rate rebuilds from a fresh trail exactly like the EMAs.
     public func resettingSmoothing() -> MeterState {
-        MeterState(smoothedRate: [:], peakRate: peakRate, peakSmoothed: [:])
+        MeterState(smoothedRate: [:], peakRate: peakRate, peakSmoothed: [:], tokenTrail: [])
     }
 }
 
@@ -253,6 +277,11 @@ public struct MeterBridge: Equatable, Sendable {
     /// while excluding the background tick.
     public static let peakMaxElapsed: TimeInterval = 10
 
+    /// The trailing window COGNITION's live rate is measured over, in seconds. Agentic sessions land
+    /// tokens every few seconds to a minute, so 90 seconds reads steady across the landing gaps while
+    /// still decaying to zero about a minute and a half after the last landing.
+    public static let cognitionWindowSeconds: TimeInterval = 90
+
     /// The tag a permission-gated or otherwise uncalibrated channel engraves.
     public static let uncalibratedTag = "UNCALIBRATED"
     /// The tag a source-missing COGNITION channel engraves (no local AI log to read).
@@ -292,6 +321,7 @@ public struct MeterBridge: Equatable, Sendable {
         var smoothedOut: [MeterChannelKind: Double] = [:]
         var peakOut: [MeterChannelKind: Double] = [:]
         var peakSmoothedOut: [MeterChannelKind: Double] = [:]
+        var trailOut = priorState.tokenTrail
 
         for kind in MeterChannelKind.allCases {
             let availability = availabilityByFamily[kind.family] ?? .disabled
@@ -318,36 +348,51 @@ public struct MeterBridge: Equatable, Sendable {
                 continue
             }
 
-            // Live rate: the clamped snapshot delta over elapsed time, smoothed by the EMA. The clamp
-            // absorbs counter noise and the midnight totals reset (a negative delta reads as zero); a
-            // zero or missing elapsed holds the last smoothed value rather than dividing by zero.
-            let priorSmoothed = priorState.smoothedRate[kind] ?? 0
             let priorPeak = priorState.peakRate[kind] ?? 0
             var smoothed: Double
-            // A session peak may only capture honest live readings: deltas measured over short gaps.
-            // The display EMA still averages a long gap (the warm background carry, a wake from sleep)
-            // into a truthful recent rate, but peaks come from a SEPARATE peak-only EMA that integrates
-            // exclusively short-gap measurements and resets whenever a long gap breaks the chain —
-            // otherwise the long-gap average would carry in the display EMA and the next short tick
-            // could promote its residue to a peak no short window ever measured.
-            var peakSmoothed = priorState.peakSmoothed[kind] ?? 0
-            if let previous, current.timestamp.timeIntervalSince(previous.timestamp) > 0 {
-                let elapsed = current.timestamp.timeIntervalSince(previous.timestamp)
-                let d = max(0, delta(current: current, previous: previous, kinds: kind.rateKinds))
-                let perUnit = kind.isPerSecond ? elapsed : elapsed / 60.0
-                let raw = Double(d) / perUnit
-                smoothed = emaAlpha * raw + (1 - emaAlpha) * priorSmoothed
-                peakSmoothed = elapsed <= peakMaxElapsed
-                    ? emaAlpha * raw + (1 - emaAlpha) * peakSmoothed
-                    : 0
+            var peakSmoothed: Double
+            let peak: Double
+            if kind == .cognition {
+                // COGNITION reads a trailing-window rate, not a delta EMA: AI tools book usage only at
+                // message completion, so tokens land in bursts and a 2-second delta is one absurd spike
+                // followed by a fast decay to idle. Tokens landed over the trailing window read steady
+                // across the burst-then-gap landing pattern and decay honestly to zero about one window
+                // after the last landing. The windowed rate is already a sustained figure, so the session
+                // peak takes its maximum directly and needs no short-gap laundering guard.
+                trailOut = advanceTokenTrail(priorState.tokenTrail, current: current, previous: previous)
+                smoothed = windowedTokenRate(trail: trailOut, at: current.timestamp)
+                peakSmoothed = 0
+                peak = max(priorPeak, smoothed)
             } else {
-                smoothed = priorSmoothed
+                // Live rate: the clamped snapshot delta over elapsed time, smoothed by the EMA. The clamp
+                // absorbs counter noise and the midnight totals reset (a negative delta reads as zero); a
+                // zero or missing elapsed holds the last smoothed value rather than dividing by zero.
+                let priorSmoothed = priorState.smoothedRate[kind] ?? 0
+                // A session peak may only capture honest live readings: deltas measured over short gaps.
+                // The display EMA still averages a long gap (the warm background carry, a wake from sleep)
+                // into a truthful recent rate, but peaks come from a SEPARATE peak-only EMA that integrates
+                // exclusively short-gap measurements and resets whenever a long gap breaks the chain —
+                // otherwise the long-gap average would carry in the display EMA and the next short tick
+                // could promote its residue to a peak no short window ever measured.
+                peakSmoothed = priorState.peakSmoothed[kind] ?? 0
+                if let previous, current.timestamp.timeIntervalSince(previous.timestamp) > 0 {
+                    let elapsed = current.timestamp.timeIntervalSince(previous.timestamp)
+                    let d = max(0, delta(current: current, previous: previous, kinds: kind.rateKinds))
+                    let perUnit = kind.isPerSecond ? elapsed : elapsed / 60.0
+                    let raw = Double(d) / perUnit
+                    smoothed = emaAlpha * raw + (1 - emaAlpha) * priorSmoothed
+                    peakSmoothed = elapsed <= peakMaxElapsed
+                        ? emaAlpha * raw + (1 - emaAlpha) * peakSmoothed
+                        : 0
+                } else {
+                    smoothed = priorSmoothed
+                }
+                // The EMA only asymptotes toward zero; snap it once it falls well under the liveness
+                // threshold so an idle channel actually reads zero instead of decaying forever. (The
+                // windowed COGNITION rate reaches exact zero on its own and needs no snap.)
+                if smoothed < kind.livenessThreshold * 0.25 { smoothed = 0 }
+                peak = max(priorPeak, peakSmoothed)
             }
-            // The EMA only asymptotes toward zero; snap it once it falls well under the liveness
-            // threshold so an idle channel actually reads zero instead of decaying forever.
-            if smoothed < kind.livenessThreshold * 0.25 { smoothed = 0 }
-
-            let peak = max(priorPeak, peakSmoothed)
             smoothedOut[kind] = smoothed
             peakOut[kind] = peak
             peakSmoothedOut[kind] = peakSmoothed
@@ -380,7 +425,7 @@ public struct MeterBridge: Equatable, Sendable {
 
         return MeterBridge(channels: channels,
                            state: MeterState(smoothedRate: smoothedOut, peakRate: peakOut,
-                                             peakSmoothed: peakSmoothedOut),
+                                             peakSmoothed: peakSmoothedOut, tokenTrail: trailOut),
                            heroTraffic: heroTraffic, heroStorage: heroStorage)
     }
 
@@ -419,6 +464,44 @@ public struct MeterBridge: Equatable, Sendable {
         for (i, value) in recent.enumerated() { buckets[i / window.bucketMinutes] += value }
         let divisor = kind.isPerSecond ? Double(window.bucketMinutes * 60) : Double(window.bucketMinutes)
         return buckets.map { Double($0) / divisor }
+    }
+
+    /// Advances COGNITION's trail with the current reading and trims it to the trailing window. The trim
+    /// keeps the newest point at or beyond the window boundary as the measurement anchor, so the windowed
+    /// delta spans at least the full window once enough history exists. An empty trail seeds from
+    /// `previous`, so a caller that never carried state still measures against its previous reading.
+    private static func advanceTokenTrail(
+        _ trail: [TokenTrailPoint], current: MeterSnapshot, previous: MeterSnapshot?
+    ) -> [TokenTrailPoint] {
+        func tokens(_ snapshot: MeterSnapshot) -> Int64 {
+            (snapshot.totals[.aiInputTokens] ?? 0) + (snapshot.totals[.aiOutputTokens] ?? 0)
+        }
+        var out = trail
+        if out.isEmpty, let previous, previous.timestamp < current.timestamp {
+            out = [TokenTrailPoint(timestamp: previous.timestamp, total: tokens(previous))]
+        }
+        // A total below the trail's newest reading is the midnight counter reset: the old points measure
+        // a counter that no longer exists, so the trail restarts at the new reading.
+        if let last = out.last, tokens(current) < last.total { out = [] }
+        // Append only a strictly newer instant; a same-instant rebuild re-reads the standing trail.
+        if out.last.map({ $0.timestamp < current.timestamp }) ?? true {
+            out.append(TokenTrailPoint(timestamp: current.timestamp, total: tokens(current)))
+        }
+        let cutoff = current.timestamp.addingTimeInterval(-cognitionWindowSeconds)
+        while out.count >= 2, out[1].timestamp <= cutoff { out.removeFirst() }
+        return out
+    }
+
+    /// Tokens landed over the trailing window, in tok/min: the newest trail total against the anchor (the
+    /// trail's oldest point). Dividing by at least the full window keeps a young trail honest — a burst
+    /// right after a cold start reads a sustained figure, never an instantaneous spike. An anchor older
+    /// than the window (the 30-second background cadence can leave it up to one tick beyond the boundary)
+    /// divides by its true span instead, an equally honest recent average.
+    private static func windowedTokenRate(trail: [TokenTrailPoint], at now: Date) -> Double {
+        guard let anchor = trail.first, let newest = trail.last else { return 0 }
+        let landed = Double(max(0, newest.total - anchor.total))
+        let span = now.timeIntervalSince(anchor.timestamp)
+        return landed / (max(span, cognitionWindowSeconds) / 60.0)
     }
 
     /// Sums the snapshot delta of the requested kinds between two readings.

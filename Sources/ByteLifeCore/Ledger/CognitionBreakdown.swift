@@ -11,15 +11,20 @@ public struct CognitionModelRow: Equatable, Sendable, Identifiable {
     public let tokens: Int64
     /// 0-1 against the busiest model's tokens, for the horizontal bar width.
     public let fraction: Double
+    /// The model's notional cost at list prices ("$1.23"), "unpriced" when no price matched (disclosed,
+    /// never a silent zero), or nil when the breakdown was built without a cost summary (the cost column
+    /// is then not rendered).
+    public let costLabel: String?
 
     public var id: String { label }
     /// The token total, formatted compactly like the account headlines ("24.1K").
     public var tokenLabel: String { ByteFormatting.tokens(tokens) }
 
-    public init(label: String, tokens: Int64, fraction: Double) {
+    public init(label: String, tokens: Int64, fraction: Double, costLabel: String? = nil) {
         self.label = label
         self.tokens = tokens
         self.fraction = fraction
+        self.costLabel = costLabel
     }
 }
 
@@ -31,26 +36,60 @@ public struct CognitionBreakdown: Equatable, Sendable {
     public let models: [CognitionModelRow]
     /// The session memo, e.g. "7 sessions · avg 24m · longest 1h 12m", or nil when no session opened.
     public let sessionMemo: String?
+    /// The notional cost of every model booked over the period (not only the displayed top list), or nil
+    /// when the caller supplied no summary (cost then stays off the card).
+    public let cost: AICostSummary?
 
-    public init(models: [CognitionModelRow], sessionMemo: String?) {
+    public init(models: [CognitionModelRow], sessionMemo: String?, cost: AICostSummary? = nil) {
         self.models = models
         self.sessionMemo = sessionMemo
+        self.cost = cost
     }
 
-    /// Builds the breakdown from the model ledger totals (any order — the builder ranks and caps them) and
-    /// the session statistics (nil for an aggregate period, which carries no session memo). Models are
-    /// ranked by input+output tokens; a model that prompted and generated nothing (only cache traffic) is
-    /// dropped, since it has no bar to draw. `limit` caps the top list.
+    /// The card's cost-line figure ("$12.34"), the priced total over the whole period.
+    public var costLine: String? {
+        cost.map { PriceCard.dollars($0.total) }
+    }
+
+    /// The footnote every cost surface carries once — the list-price framing with its as-of date — plus
+    /// the unpriced disclosure when tokens were excluded from the total.
+    public var costDisclosure: String? {
+        guard let cost else { return nil }
+        let framing = "at list prices, as of \(cost.asOf)"
+        guard let unpriced = cost.unpricedDisclosure else { return framing }
+        return "\(framing) · \(unpriced)"
+    }
+
+    /// Builds the breakdown from the model ledger totals (any order — the builder ranks and caps them),
+    /// the session statistics (nil for an aggregate period, which carries no session memo), and the
+    /// period's notional cost summary (nil keeps every cost surface off). Models are ranked by
+    /// input+output tokens; a model that prompted and generated nothing (only cache traffic) is dropped,
+    /// since it has no bar to draw — its cost still counts in the summary's total. `limit` caps the top
+    /// list.
     public static func build(
         modelTotals: [AIModelTotal],
         sessionStats: AISessionStats?,
-        limit: Int = 5
+        limit: Int = 5,
+        cost: AICostSummary? = nil
     ) -> CognitionBreakdown {
-        var ranked: [(label: String, tokens: Int64)] = []
+        // The summary's per-model cost lines keyed by source and model, so each displayed row can
+        // carry its own cost figure.
+        var costByKey: [String: AIModelCost] = [:]
+        for line in cost?.models ?? [] { costByKey["\(line.source)|\(line.model)"] = line }
+        func costLabel(source: String, model: String) -> String? {
+            guard cost != nil else { return nil }
+            guard let c = costByKey["\(source)|\(model)"]?.cost else { return "unpriced" }
+            return PriceCard.dollars(c)
+        }
+
+        var ranked: [(label: String, tokens: Int64, costLabel: String?)] = []
         for row in modelTotals {
-            let tokens = row.input + row.output
+            // `uncachedInput` keeps the cache exclusion honest for sources that record cached tokens
+            // inside the input channel (Codex, Gemini).
+            let tokens = row.uncachedInput + row.output
             guard tokens > 0 else { continue }
-            ranked.append((label: shortLabel(source: row.source, model: row.model), tokens: tokens))
+            ranked.append((label: shortLabel(source: row.source, model: row.model), tokens: tokens,
+                           costLabel: costLabel(source: row.source, model: row.model)))
         }
         ranked.sort { $0.tokens != $1.tokens ? $0.tokens > $1.tokens : $0.label < $1.label }
 
@@ -59,11 +98,12 @@ public struct CognitionBreakdown: Equatable, Sendable {
             CognitionModelRow(
                 label: entry.label,
                 tokens: entry.tokens,
-                fraction: topTokens > 0 ? Double(entry.tokens) / Double(topTokens) : 0
+                fraction: topTokens > 0 ? Double(entry.tokens) / Double(topTokens) : 0,
+                costLabel: entry.costLabel
             )
         }
 
-        return CognitionBreakdown(models: models, sessionMemo: sessionMemo(sessionStats))
+        return CognitionBreakdown(models: models, sessionMemo: sessionMemo(sessionStats), cost: cost)
     }
 
     /// The session memo line: "N sessions · avg <len> · longest <len>", with the count singularized at one.
