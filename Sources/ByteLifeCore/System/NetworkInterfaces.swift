@@ -1,15 +1,34 @@
 import Foundation
+import CoreWLAN
+import SystemConfiguration
+
+public enum NetworkConnection: Hashable, Sendable {
+    case wifi(ssid: String?)
+    case ethernet
+    case other
+}
+
+/// Bytes counted on one connection during a polling interval or across a recorded day.
+public struct NetworkTraffic: Equatable, Identifiable, Sendable {
+    public let connection: NetworkConnection
+    public let bytesIn: Int64
+    public let bytesOut: Int64
+
+    public var id: NetworkConnection { connection }
+}
 
 /// Cumulative since-boot byte counters for one network interface.
 public struct InterfaceCounters: Equatable, Sendable {
     public let name: String
     public let bytesIn: UInt64
     public let bytesOut: UInt64
+    public let connection: NetworkConnection
 
-    public init(name: String, bytesIn: UInt64, bytesOut: UInt64) {
+    public init(name: String, bytesIn: UInt64, bytesOut: UInt64, connection: NetworkConnection = .other) {
         self.name = name
         self.bytesIn = bytesIn
         self.bytesOut = bytesOut
+        self.connection = connection
     }
 }
 
@@ -19,6 +38,29 @@ public struct InterfaceCounters: Equatable, Sendable {
 public enum NetworkInterfaces {
     /// One `InterfaceCounters` per non-loopback interface. Empty on any sysctl failure.
     public static func read() -> [InterfaceCounters] {
+        read(includingWiFiNames: false)
+    }
+
+    /// CoreWLAN returns a name only when the system allows the app to see it. The interface type is
+    /// available independently of that permission. Query the hardware list each poll for USB adapters.
+    public static func read(includingWiFiNames: Bool) -> [InterfaceCounters] {
+        var connections: [String: NetworkConnection] = [:]
+        let interfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] ?? []
+        for interface in interfaces {
+            guard let bsdName = SCNetworkInterfaceGetBSDName(interface),
+                  let type = SCNetworkInterfaceGetInterfaceType(interface) else { continue }
+            if type == kSCNetworkInterfaceTypeIEEE80211 {
+                connections[bsdName as String] = .wifi(ssid: nil)
+            } else if type == kSCNetworkInterfaceTypeEthernet {
+                connections[bsdName as String] = .ethernet
+            }
+        }
+        let wifi = CWWiFiClient.shared()
+        for name in wifi.interfaceNames() ?? [] {
+            let ssid = includingWiFiNames ? wifi.interface(withName: name)?.ssid() : nil
+            connections[name] = .wifi(ssid: ssid.flatMap { $0.isEmpty ? nil : $0 })
+        }
+
         var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
 
         // First call sizes the buffer; the second fills it.
@@ -52,10 +94,12 @@ public enum NetworkInterfaces {
                     if msg.ifm_data.ifi_type != UInt8(IFT_LOOP) {
                         var nameBuffer = [CChar](repeating: 0, count: Int(IFNAMSIZ))
                         if if_indextoname(UInt32(msg.ifm_index), &nameBuffer) != nil {
+                            let name = String(cString: nameBuffer)
                             result.append(InterfaceCounters(
-                                name: String(cString: nameBuffer),
+                                name: name,
                                 bytesIn: msg.ifm_data.ifi_ibytes,
-                                bytesOut: msg.ifm_data.ifi_obytes
+                                bytesOut: msg.ifm_data.ifi_obytes,
+                                connection: connections[name] ?? .other
                             ))
                         }
                     }

@@ -47,12 +47,12 @@ final class MigrationsV4Tests: XCTestCase {
     }
 
     func testMigrateFromPopulatedV3AddsV4TablesAndPreservesData() throws {
-        let anchor = ISO8601DateFormatter().date(from: "2026-07-06T12:00:00Z")!
+        let anchor = fixedTimestamp()
         let dayEpoch = DayBucket.dayEpoch(for: anchor)
         try makePopulatedV3Store(dayEpoch: dayEpoch)
 
         do {
-            // Reopening runs the v4 step only; v1-v3 are skipped because user_version is already 3.
+            // Reopening runs v4 and later steps. v1 through v3 are already applied.
             let store = try SampleStore(path: path)
 
             // Every v3 row survived unchanged across all pre-existing tables.
@@ -87,8 +87,8 @@ final class MigrationsV4Tests: XCTestCase {
             XCTAssertEqual(try store.gaugeSeries(gauge: "cpuTemperature", dayEpoch: dayEpoch)[30], 512)
         }
 
-        // The store closed with the block; a fresh raw handle confirms the version advanced to 4.
-        XCTAssertEqual(try readUserVersion(), 4)
+        // A fresh raw handle confirms the migrator reached the current schema.
+        XCTAssertEqual(try readUserVersion(), Migrations.currentVersion)
     }
 
     private func readUserVersion() throws -> Int32 {

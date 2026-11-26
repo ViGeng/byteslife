@@ -284,7 +284,7 @@ The order, each step gated on the previous ship:
 1a. Stabilization (0.8.1, executed the same evening): the Bluetooth TCC kill, the beachballing permission flow, and the blocking launch — see "Stabilization" below. On 2026-07-08 the repo went public, the Homebrew tap moved to the conventional layout (releases on byteslife itself, the cask points there, the old private-repo hosting hack retired), and 0.8.1 shipped to the tap with a public-facing README.
 2. Iteration 10 (executed 2026-07-10, 0.9.0; the tap publish waits on the founder's verdict): the realtime token meter, the notional AI cost, and the Composite. All three only read what v4 already records, so this was the highest founder-visible value per line changed.
 2a. Iteration 10a (executed 2026-07-10, 0.9.1): the self-keeping books — the founder dropped the Reconcile ritual; days auto-close at midnight with a stamp-honesty grace window, historical days backfill in arrears, the open day renders a provisional unsealed receipt, and receipts gain Print. Founder feedback on the panel the same day also retired the hero flow chart (the TRAFFIC and STORAGE cards carry their own sparklines, and better overall metrics are planned), shipped in the same 0.9.1 release.
-3. Iteration 11 (0.10.0, the deeper record, schema v5): the Workshop (git) and the Journal in one migration, plus the working-hours strip as the first journal-powered insight.
+3. Iteration 11 (0.10.0, the deeper record, schema v6): the Workshop (git) and the Journal in one migration, plus the working-hours strip as the first journal-powered insight.
 4. Iteration 12 (0.11.0, beyond the machine, schema v6): the Engagement Book (calendar) before the Correspondence account (email), ordered by permission friction.
 5. The standing backlog behind those: the weekly Statement, multi-device holdings and agentless SSH collection, the app rename, and face-distance sensing as noted future work.
 
@@ -356,7 +356,7 @@ Status: executed 2026-07-10 (see CHANGELOG.md, iteration 10a). Approved 2026-07-
 
 # Iteration 11 (queued behind 10): the deeper record
 
-Status: approved 2026-07-07 from founder feedback (git stats, and event-grain records with metadata so insights like working peaks stay derivable). One migration, schema v5, carries both halves. Version 0.10.0.
+Status: approved 2026-07-07 from founder feedback (git stats, and event-grain records with metadata so insights like working peaks stay derivable). One migration, schema v6, carries both halves. Schema v5 adds daily connection traffic. Version 0.10.0.
 
 ## The Workshop: git stats
 
@@ -375,7 +375,7 @@ Commits are the most ledger-shaped data on the machine: discrete, timestamped, a
 Founder direction: keep detailed per-event records with metadata (a commit SHA indexed with its stats, and the other metrics treated the same), so future insights such as working peaks stay derivable without re-collection. In bookkeeping terms ByteLife gains a proper journal, the book of original entry; day cards, receipts, and aggregates are derived views over it, never the only record.
 
 - The continuous families are already journaled. `samples` persists minute-grain counters forever (day_epoch, minute, kind) and iteration 9's `gauges` persists minute-grain sensor levels, so hour-of-day patterns for bytes, keys, attention, and sensors are derivable from what is on disk today. No change needed there.
-- The discrete families gain event rows in schema v5. `git_commits(sha TEXT PRIMARY KEY, repo_hash, committed_at, day_epoch, lines_added, lines_deleted, files_changed)` with a day index is both the Workshop's dedup ledger and its journal: one insert per commit, and per-hour, per-repo, and distinct-repo breakdowns are each one query away.
+- The discrete families gain event rows in schema v6. `git_commits(sha TEXT PRIMARY KEY, repo_hash, committed_at, day_epoch, lines_added, lines_deleted, files_changed)` with a day index is both the Workshop's dedup ledger and its journal: one insert per commit, and per-hour, per-repo, and distinct-repo breakdowns are each one query away.
 - The AI dedup ledger becomes the AI journal. `ai_seen` gains nullable columns (timestamp, source, model, session_id, input, output, cache_creation, cache_read) populated for every event ingested from v5 onward, written in the same atomic transaction ingest already uses. Rows recorded before v5 keep NULL metadata, so the journal honestly begins at its birthday instead of pretending to reach back; dedup semantics are untouched.
 - Retention is forever, matching the ledger's premise. Journal rows are tens of bytes, so a heavy year adds a few megabytes.
 - One first insight ships with the schema so the journal earns its keep immediately: the Back Office day story gains a WORKING HOURS strip of three thin 24-hour lanes (keystrokes from minute samples, tokens from minute samples, commits from the journal as dots), each lane naming its own peak hour. There is no cross-family summation; each lane speaks its own unit, per the Composite's reasoning.

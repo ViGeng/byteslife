@@ -99,3 +99,19 @@ Progress: the hero flow chart was removed along with everything that existed onl
 The plan was to give ByteLife a Finder icon that expresses the idea of measuring daily activity in bytes.
 
 Eight teal pixels form a small activity chart. The packaging script adds the icon to the app bundle and registers it in `Info.plist`. The README shows the artwork. An isolated release build passed signature verification, and macOS tools decoded the packaged icon and all ten standard icon representations. The installed command-line toolchain lacks XCTest, so the unit tests could not run.
+
+## 2026-11-26 21:19 CET · Daily traffic by connection
+
+The plan was to show daily received and sent bytes for Ethernet, each Wi-Fi network, and other interfaces in the General Ledger.
+
+The Day view shows connection totals and offers an explicit Location Services prompt for Wi-Fi names. Schema v5 writes the daily breakdown with the minute samples and counter baselines in one transaction. Bytes from Wi-Fi switches and sampling gaps with uncertain attribution stay in the Wi-Fi subtotal.
+
+The app built successfully. Focused checks passed for interface detection, Wi-Fi switching, simultaneous connections, daily buckets, migration, and write rollback. The full XCTest suite could not run with the installed Command Line Tools. The Location Services prompt and real hotspot switching still need an interactive check.
+
+## 2026-11-26 21:27 CET · Local development install
+
+The plan was to build and run the working tree as a local app with its own database and macOS permissions.
+
+`./scripts/package-app.sh --dev` builds, signs, and opens `dist/ByteLife Dev.app`. The menu bar shows DEV, and the bundle keeps its test database in `~/Library/Application Support/ByteLife Dev/`. Running the command again quits the previous development instance and opens the rebuilt app.
+
+Verified the development bundle's signature, bundle identifier, and separate database on macOS. Running the command a second time replaced the original process with one new development instance.

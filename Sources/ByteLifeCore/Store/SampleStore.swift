@@ -183,17 +183,103 @@ public final class SampleStore: @unchecked Sendable {
     /// Either the samples and every baseline commit together or nothing does; the caller then advances
     /// its in-memory baselines only on a clean return.
     public func record(_ samples: [Sample], settingMeta meta: [String: Int64]) throws {
+        try recordCounters(samples, settingMeta: meta)
+    }
+
+    /// Books the existing aggregate samples and their connection breakdown from the same byte deltas.
+    func recordNetwork(_ traffic: [NetworkTraffic], at timestamp: Date, settingMeta meta: [String: Int64]) throws {
+        var samples: [Sample] = []
+        let bytesIn = traffic.reduce(0) { $0 + $1.bytesIn }
+        let bytesOut = traffic.reduce(0) { $0 + $1.bytesOut }
+        if bytesIn > 0 { samples.append(Sample(kind: .networkBytesIn, value: bytesIn, timestamp: timestamp)) }
+        if bytesOut > 0 { samples.append(Sample(kind: .networkBytesOut, value: bytesOut, timestamp: timestamp)) }
+        try recordCounters(samples, settingMeta: meta) {
+            try upsertNetworkTrafficLocked(traffic, dayEpoch: DayBucket.dayEpoch(for: timestamp))
+        }
+    }
+
+    private func recordCounters(
+        _ samples: [Sample], settingMeta meta: [String: Int64], extraWrites: () throws -> Void = {}
+    ) throws {
         guard !samples.isEmpty || !meta.isEmpty else { return }
         try queue.sync {
             try exec("BEGIN IMMEDIATE;")
             do {
                 try insertSamplesLocked(samples)
                 try upsertMetaIntsLocked(meta)
+                try extraWrites()
                 try exec("COMMIT;")
             } catch {
                 try? exec("ROLLBACK;")
                 throw error
             }
+        }
+    }
+
+    private func upsertNetworkTrafficLocked(_ traffic: [NetworkTraffic], dayEpoch: Int64) throws {
+        guard !traffic.isEmpty else { return }
+        let stmt = try prepare("""
+            INSERT INTO network_traffic (day_epoch, connection, ssid, bytes_in, bytes_out)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (day_epoch, connection, ssid)
+            DO UPDATE SET bytes_in = bytes_in + excluded.bytes_in, bytes_out = bytes_out + excluded.bytes_out;
+            """)
+        defer { sqlite3_finalize(stmt) }
+        for row in traffic {
+            let kind: String
+            let ssid: String
+            switch row.connection {
+            case .wifi(let name):
+                kind = "wifi"
+                ssid = name ?? ""
+            case .ethernet:
+                kind = "ethernet"
+                ssid = ""
+            case .other:
+                kind = "other"
+                ssid = ""
+            }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            bindText(stmt, 2, kind)
+            bindText(stmt, 3, ssid)
+            sqlite3_bind_int64(stmt, 4, row.bytesIn)
+            sqlite3_bind_int64(stmt, 5, row.bytesOut)
+            let rc = sqlite3_step(stmt)
+            guard rc == SQLITE_DONE else { throw SQLiteError.from(db: db, code: rc) }
+            sqlite3_reset(stmt)
+            sqlite3_clear_bindings(stmt)
+        }
+    }
+
+    /// One row per Wi-Fi name or connection type for this local accounting day, largest first.
+    public func networkTraffic(dayEpoch: Int64) throws -> [NetworkTraffic] {
+        try queue.sync {
+            let stmt = try prepare("""
+                SELECT connection, ssid, bytes_in, bytes_out FROM network_traffic
+                WHERE day_epoch = ? ORDER BY bytes_in + bytes_out DESC, connection, ssid;
+                """)
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, dayEpoch)
+            var rows: [NetworkTraffic] = []
+            var rc = sqlite3_step(stmt)
+            while rc == SQLITE_ROW {
+                let connection: NetworkConnection
+                switch columnText(stmt, 0) {
+                case "wifi":
+                    let name = columnText(stmt, 1)
+                    connection = .wifi(ssid: name.isEmpty ? nil : name)
+                case "ethernet": connection = .ethernet
+                default: connection = .other
+                }
+                rows.append(NetworkTraffic(
+                    connection: connection,
+                    bytesIn: sqlite3_column_int64(stmt, 2),
+                    bytesOut: sqlite3_column_int64(stmt, 3)
+                ))
+                rc = sqlite3_step(stmt)
+            }
+            guard rc == SQLITE_DONE else { throw SQLiteError.from(db: db, code: rc) }
+            return rows
         }
     }
 
@@ -1149,14 +1235,15 @@ public final class SampleStore: @unchecked Sendable {
     }
 
     private func bindText(_ stmt: OpaquePointer, _ index: Int32, _ value: String) {
-        sqlite3_bind_text(stmt, index, value, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, index, value, Int32(value.utf8.count), SQLITE_TRANSIENT)
     }
 
     /// Reads a TEXT column, treating SQL NULL as the empty string. The reconciliation columns are all
     /// declared NOT NULL, so NULL never actually occurs here.
     private func columnText(_ stmt: OpaquePointer, _ index: Int32) -> String {
         guard let raw = sqlite3_column_text(stmt, index) else { return "" }
-        return String(cString: raw)
+        let count = Int(sqlite3_column_bytes(stmt, index))
+        return String(decoding: UnsafeBufferPointer(start: raw, count: count), as: UTF8.self)
     }
 
     /// Drains a single-column INTEGER result set into an array. Assumes it runs on `queue`.

@@ -1,8 +1,6 @@
 import Foundation
 
-/// The subset of `SampleStore` the counter collectors (network, disk) depend on. Extracted as a
-/// protocol so tests can inject a failing store and prove that a failed commit advances neither the
-/// recorded deltas nor the in-memory baselines.
+/// The disk counter's store dependency. Tests can inject a failing store to check baseline retries.
 protocol CounterStore: AnyObject {
     func record(_ samples: [Sample], settingMeta meta: [String: Int64]) throws
     func metaInt(_ key: String) throws -> Int64?

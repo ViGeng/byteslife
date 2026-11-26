@@ -18,6 +18,7 @@ extension Notification.Name {
 /// them, and starts them.
 final class AppCoordinator {
     static let shared = AppCoordinator()
+    static let isDevelopmentBuild = Bundle.main.bundleIdentifier == "com.vigeng.bytelife.dev"
 
     let store: SampleStore
     let registry: CollectorRegistry
@@ -58,7 +59,7 @@ final class AppCoordinator {
 
         let ai = AICollector(store: store)
         aiCollector = ai
-        let network = NetworkCollector(store: store)
+        let network = NetworkCollector(store: store) { NetworkInterfaces.read(includingWiFiNames: true) }
         let disk = DiskCollector(store: store)
         let screen = ScreenCollector(store: store)
         let input = InputCollector(store: store)
@@ -165,7 +166,7 @@ final class AppCoordinator {
         }
     }
 
-    /// Application Support/ByteLife/bytelife.sqlite, creating the directory if needed.
+    /// Gives the local development app its own database so it can run beside the release app.
     private static func databaseURL() -> URL {
         let fileManager = FileManager.default
         let base: URL
@@ -179,7 +180,7 @@ final class AppCoordinator {
         } catch {
             fatalError("ByteLife could not locate Application Support: \(error)")
         }
-        let directory = base.appendingPathComponent("ByteLife", isDirectory: true)
+        let directory = base.appendingPathComponent(isDevelopmentBuild ? "ByteLife Dev" : "ByteLife", isDirectory: true)
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appendingPathComponent("bytelife.sqlite")
     }

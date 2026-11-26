@@ -60,8 +60,8 @@ In the General Ledger's **Day** view, **Traffic by connection** shows received, 
 ByteLife is local-first and records **counts, never contents**.
 
 - There is no network client in the app, so there is nothing to phone home with. You are welcome to confirm that with Little Snitch.
-- Data lives only in `~/Library/Application Support/ByteLife/bytelife.sqlite` on your Mac.
-- With Location Services permission, ByteLife stores the connected Wi-Fi name alongside daily byte totals. It does not request your geographic location.
+- The installed release keeps its data in `~/Library/Application Support/ByteLife/bytelife.sqlite` on your Mac.
+- When you enable Wi-Fi names, ByteLife uses Location Services permission to read the connected network name. The name and its daily byte totals stay in the local database.
 - Keystrokes are counted and their key codes discarded; the event tap never sees what you type in password fields by OS design. Hostnames and Bluetooth peripheral names are stored only as salted, non-reversible hashes. File and command activity is counted, never read.
 - The app never issues a productivity score or judgment. It reports raw numbers and leaves the meaning to you.
 
@@ -72,6 +72,14 @@ ByteLife asks for **Input Monitoring** when you enable Mechanics from the panel 
 ## Building from source
 
 Needs macOS 14+ and a Swift 6 toolchain.
+
+Build and open the development app with this command.
+
+```sh
+./scripts/package-app.sh --dev
+```
+
+This builds and opens `dist/ByteLife Dev.app`, marked **DEV** in the menu bar. Run the same command after an edit to rebuild and restart it. The development app uses its own macOS permissions and stores its test data in `~/Library/Application Support/ByteLife Dev/`. If the build uses ad hoc signing, macOS may ask you to grant permissions again after a rebuild.
 
 ```sh
 swift build           # build the package

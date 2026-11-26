@@ -73,7 +73,7 @@ final class GeneralLedgerViewModel: ObservableObject {
     private var focusByDay: [Int64: [String: Int64]] = [:]
     private var hostsByDay: [Int64: Int] = [:]
 
-    private var store: SampleStore { coordinator.store }
+    var store: SampleStore { coordinator.store }
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -597,6 +597,10 @@ struct GeneralLedgerView: View {
                         LazyVGrid(columns: gridColumns, spacing: 12) {
                             ForEach(Array(story.cards.dropFirst()), content: accountCard)
                         }
+                        NetworkTrafficView(dayEpoch: day, store: vm.store)
+                            .id(day)
+                            .padding(12)
+                            .background(cardShape)
                         if let aux = vm.selectedAuxiliary {
                             auxiliarySection(aux, showEnergyBars: true)
                         }

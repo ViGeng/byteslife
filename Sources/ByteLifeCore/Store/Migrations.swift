@@ -16,7 +16,7 @@ func execSQL(_ db: OpaquePointer, _ sql: String) throws {
 /// up-to-date database is a no-op because the version already matches.
 enum Migrations {
     /// Schema version this build targets. Bump alongside a new `applyVN` step.
-    static let currentVersion: Int32 = 4
+    static let currentVersion: Int32 = 5
 
     static func migrate(_ db: OpaquePointer) throws {
         if try userVersion(db) < 1 {
@@ -34,6 +34,10 @@ enum Migrations {
         if try userVersion(db) < 4 {
             try applyV4(db)
             try setUserVersion(db, 4)
+        }
+        if try userVersion(db) < 5 {
+            try applyV5(db)
+            try setUserVersion(db, 5)
         }
     }
 
@@ -139,6 +143,20 @@ enum Migrations {
                 gauge     TEXT    NOT NULL,
                 value     INTEGER NOT NULL,
                 PRIMARY KEY (day_epoch, minute, gauge)
+            ) WITHOUT ROWID;
+            """)
+    }
+
+    /// Daily interface totals. Existing aggregate samples carry no connection information.
+    private static func applyV5(_ db: OpaquePointer) throws {
+        try execSQL(db, """
+            CREATE TABLE IF NOT EXISTS network_traffic (
+                day_epoch  INTEGER NOT NULL,
+                connection TEXT    NOT NULL,
+                ssid       TEXT    NOT NULL,
+                bytes_in   INTEGER NOT NULL,
+                bytes_out  INTEGER NOT NULL,
+                PRIMARY KEY (day_epoch, connection, ssid)
             ) WITHOUT ROWID;
             """)
     }

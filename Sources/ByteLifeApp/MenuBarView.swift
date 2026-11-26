@@ -13,7 +13,7 @@ struct ByteLifeApplication: App {
         } label: {
             // Glyph plus today's posted byte volume, kept compact for the menubar.
             Image(systemName: "book.closed")
-            Text(viewModel.menubarBalance)
+            Text(AppCoordinator.isDevelopmentBuild ? "DEV \(viewModel.menubarBalance)" : viewModel.menubarBalance)
                 .monospacedDigit()
         }
         .menuBarExtraStyle(.window)
