@@ -93,3 +93,9 @@ The adversarial review pass confirmed one major finding (reported twice) and fix
 The founder annotated the 0.9.1 panel: the combined traffic-plus-storage chart at the top duplicates the sparklines the TRAFFIC and STORAGE cards already carry, and better overall metrics are planned, so the chart goes for now.
 
 Progress: the hero flow chart was removed along with everything that existed only for it — the view and its window selector, the persisted hero window key, the view model's hero fetch term, and the core bridge's hero series with their re-bucketing pass. The rest of the header is untouched: the byte-volume figure, the combined flow line, the hex ticker, and the COMPOSITE and LIVE chips. The Back Office day and period charts are unrelated surfaces and unchanged. Ground truth: swift build green and 458 tests green (one hero-specific test deleted with its subject). This ships in the same 0.9.1 release as iteration 10a.
+
+## 2026-11-26 21:15 CET · macOS app icon
+
+The plan was to give ByteLife a Finder icon that expresses the idea of measuring daily activity in bytes.
+
+Eight teal pixels form a small activity chart. The packaging script adds the icon to the app bundle and registers it in `Info.plist`. The README shows the artwork. An isolated release build passed signature verification, and macOS tools decoded the packaged icon and all ten standard icon representations. The installed command-line toolchain lacks XCTest, so the unit tests could not run.

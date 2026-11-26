@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/AppIcon.svg" width="112" alt="ByteLife app icon">
+</p>
+
 <h1 align="center">ByteLife</h1>
 
 <p align="center">A native macOS menu bar app that tracks your digital life in bytes:<br>AI tokens, network, disk, screen time, and input, all under one roof.</p>
@@ -33,7 +37,7 @@ Requires macOS 14 (Sonoma) or newer. It runs as a menu bar item with no Dock ico
 
 Five core families, each reported in or alongside literal byte counts:
 
-- **Traffic** — network bytes sent and received.
+- **Traffic** — network bytes sent and received, with daily totals for Ethernet, individual Wi-Fi networks, and other interfaces.
 - **Storage** — disk bytes written and read.
 - **Cognition** — AI tokens prompted and generated, read from local Claude Code, Codex CLI, and Gemini CLI logs, broken down by model and session, and valued as a notional dollar cost at pay-as-you-go list prices (a bundled price card with an explicit as-of date; unpriced models are disclosed, never zeroed).
 - **Exposure** — time spent in front of an awake display.
@@ -49,18 +53,21 @@ The **General Ledger** is the record. It treats your digital life as a small est
 
 ![The General Ledger window, showing a day's accounts, charts, and history](docs/screenshots/general-ledger.png)
 
+In the General Ledger's **Day** view, **Traffic by connection** shows received, sent, and total bytes for each connection. After you enable Wi-Fi names, a phone hotspot or a 5G router joined over Wi-Fi appears under its network name. The figures measure this Mac's interface traffic, including local transfers. Connection details accumulate from the time this version starts collecting. Wi-Fi bytes that cannot be assigned to a name appear under **Unknown Wi-Fi network**.
+
 ## Privacy
 
 ByteLife is local-first and records **counts, never contents**.
 
 - There is no network client in the app, so there is nothing to phone home with. You are welcome to confirm that with Little Snitch.
 - Data lives only in `~/Library/Application Support/ByteLife/bytelife.sqlite` on your Mac.
+- With Location Services permission, ByteLife stores the connected Wi-Fi name alongside daily byte totals. It does not request your geographic location.
 - Keystrokes are counted and their key codes discarded; the event tap never sees what you type in password fields by OS design. Hostnames and Bluetooth peripheral names are stored only as salted, non-reversible hashes. File and command activity is counted, never read.
 - The app never issues a productivity score or judgment. It reports raw numbers and leaves the meaning to you.
 
 ## Permissions
 
-Only **Input Monitoring** ever prompts, and only when you choose to light up the Mechanics channel from the panel; ByteLife never raises the prompt on its own. Everything else either needs no permission or degrades honestly when a source is unavailable. Bluetooth counting stays dormant behind an authorization gate until a future release adds an explicit opt-in.
+ByteLife asks for **Input Monitoring** when you enable Mechanics from the panel and for **Location Services** when you select **Enable Wi-Fi names** in the General Ledger. Wi-Fi and Ethernet totals work without Location Services. Bluetooth counting stays dormant until a future release adds an explicit opt-in.
 
 ## Building from source
 
@@ -68,7 +75,7 @@ Needs macOS 14+ and a Swift 6 toolchain.
 
 ```sh
 swift build           # build the package
-swift test            # run the core test suite (458 tests)
+swift test            # run the core test suite
 ./scripts/package-app.sh   # assemble an ad-hoc-signed dist/ByteLife.app
 ```
 

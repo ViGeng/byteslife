@@ -12,6 +12,7 @@ EXECUTABLE="ByteLifeApp"
 BUNDLE="dist/${APP_NAME}.app"
 CONTENTS="${BUNDLE}/Contents"
 MACOS_DIR="${CONTENTS}/MacOS"
+RESOURCES_DIR="${CONTENTS}/Resources"
 
 echo "==> Building release binary"
 swift build -c release
@@ -24,8 +25,9 @@ fi
 
 echo "==> Assembling ${BUNDLE}"
 rm -rf "$BUNDLE"
-mkdir -p "$MACOS_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BIN_PATH" "${MACOS_DIR}/${EXECUTABLE}"
+cp assets/AppIcon.icns "${RESOURCES_DIR}/AppIcon.icns"
 
 cat > "${CONTENTS}/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -40,6 +42,8 @@ cat > "${CONTENTS}/Info.plist" <<'PLIST'
     <string>ByteLifeApp</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon.icns</string>
     <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
@@ -50,6 +54,10 @@ cat > "${CONTENTS}/Info.plist" <<'PLIST'
     <string>1</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>ByteLife counts how many Bluetooth peripherals connect during the day. It never reads device names, addresses, or any data they carry.</string>
+    <key>NSLocationUsageDescription</key>
+    <string>ByteLife uses this permission to group your daily traffic by connected Wi-Fi name. It does not request your location.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>ByteLife uses this permission to group your daily traffic by connected Wi-Fi name. It does not request your location.</string>
 </dict>
 </plist>
 PLIST

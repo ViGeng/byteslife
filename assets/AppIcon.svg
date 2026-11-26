@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="ByteLife app icon">
+  <defs>
+    <linearGradient id="background" x2="0.7" y2="1">
+      <stop stop-color="#28394a"/>
+      <stop offset="1" stop-color="#101923"/>
+    </linearGradient>
+    <linearGradient id="activity" gradientUnits="userSpaceOnUse" x1="512" y1="286" x2="512" y2="622">
+      <stop stop-color="#92f4de"/>
+      <stop offset="1" stop-color="#46e0c8"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="92" y="100" width="840" height="840" rx="196" fill="#0b0e11" opacity="0.35"/>
+  <rect x="92" y="90" width="840" height="840" rx="196" fill="url(#background)"/>
+  <rect x="95" y="93" width="834" height="834" rx="193" fill="none" stroke="#aec9de" stroke-opacity="0.19" stroke-width="6"/>
+
+  <!-- Eight bits form a byte and the shape of a day's activity. -->
+  <g fill="url(#activity)">
+    <rect x="224" y="526" width="96" height="96" rx="14"/>
+    <rect x="344" y="526" width="96" height="96" rx="14"/>
+    <rect x="464" y="526" width="96" height="96" rx="14"/>
+    <rect x="584" y="526" width="96" height="96" rx="14"/>
+    <rect x="704" y="526" width="96" height="96" rx="14"/>
+    <rect x="344" y="406" width="96" height="96" rx="14"/>
+    <rect x="464" y="406" width="96" height="96" rx="14"/>
+    <rect x="464" y="286" width="96" height="96" rx="14"/>
+  </g>
+</svg>
