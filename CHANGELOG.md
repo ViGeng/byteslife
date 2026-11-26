@@ -135,3 +135,9 @@ Verified Today, Week, and Month overviews, Traffic details and its connection ta
 The plan was to release the redesigned General Ledger and the connection tracking added since 0.9.1.
 
 ByteLife 0.10.0 brings date and metric browsing, daily trends and calendar heatmaps, and per-connection network totals. The app also gains a Finder icon and a separate development build. The Ledger navigation and drill-downs passed desktop verification. Focused checks covered historical rollups and connection tracking. The full XCTest suite requires an Xcode installation with XCTest.
+
+## 2026-11-26 22:01 CET · Homebrew post-install hook
+
+The plan was to remove Homebrew's legacy postflight warning from the cask and future releases.
+
+The cask and release script now use Homebrew's structured postflight steps for ByteLife's existing quarantine cleanup. Homebrew 7.0.16 ran the step against a temporary app bundle, removed the test attribute, and preserved the code signature.

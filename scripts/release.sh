@@ -61,10 +61,8 @@ cask "bytelife" do
 
   app "ByteLife.app"
 
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-cr", "#{appdir}/ByteLife.app"],
-                   sudo: false
+  postflight_steps do
+    run "/usr/bin/xattr", args: ["-cr", "{{appdir}}/ByteLife.app"]
   end
 
   zap trash: [
