@@ -16,9 +16,9 @@ struct NetworkTrafficView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("TRAFFIC BY CONNECTION")
-                .font(.system(.caption, design: .monospaced).weight(.semibold))
-                .foregroundStyle(LatticePalette.teal(scheme))
+            Text("By connection")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
 
             if readFailed {
                 note("Connection totals are temporarily unavailable.")

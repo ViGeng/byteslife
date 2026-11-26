@@ -49,11 +49,12 @@ Plus a deck of auxiliary accounts kept *also on the books*: energy drawn (measur
 
 The **panel** is the live view. It opens fully formed with warm rates, animates figures as they climb, carries a LIVE toggle, and lets each channel pick its own chart window from 30 minutes up to 24 hours (or a custom work window). The hero number is the day's posted byte volume; the channels below it each show a live rate, a sparkline, a peak mark, and the day's directional totals.
 
-The **General Ledger** is the record. It treats your digital life as a small estate and installs you as its accountant: paired flows book as debits and credits, screen time and input book frankly as expense accounts, and the books keep themselves — each day closes itself at midnight into an immutable, hash-stamped receipt, while the open day always shows an honest provisional one. Any receipt can be shared, saved as a PDF or image, or printed, and the sealed artifact stays tamper-evident. Browse by day, week, or month, with an all-time trial balance in the corner.
+The **General Ledger** has two ways to browse your records.
 
-![The General Ledger window, showing a day's accounts, charts, and history](docs/screenshots/general-ledger.png)
+- **By Date** opens a day, week, or month with an overview of Traffic, Storage, Cognition, Mechanics, Exposure, and Other. Open a module for its totals and details. Today's receipt is provisional. Each day closes automatically at midnight into an immutable, hash-stamped receipt. Use **View receipt** to share, save as PDF or image, or print it. The all-time trial balance opens from the sidebar.
+- **By Metric** shows daily totals as a trend or a calendar heatmap. Choose a metric and a 30-, 90-, or 365-day window, then page into earlier history. You can open the matching date from the trend or click a recorded day in the heatmap. Days without a sample are shown separately from recorded zero values.
 
-In the General Ledger's **Day** view, **Traffic by connection** shows received, sent, and total bytes for each connection. After you enable Wi-Fi names, a phone hotspot or a 5G router joined over Wi-Fi appears under its network name. The figures measure this Mac's interface traffic, including local transfers. Connection details accumulate from the time this version starts collecting. Wi-Fi bytes that cannot be assigned to a name appear under **Unknown Wi-Fi network**.
+Under **By Date** → **Day** → **Traffic**, **By connection** shows received, sent, and total bytes for each connection. After you enable Wi-Fi names, a phone hotspot or a 5G router joined over Wi-Fi appears under its network name. Figures include local transfers. Connection history starts when ByteLife begins collecting it. Wi-Fi bytes that cannot be assigned to a name appear under **Unknown Wi-Fi network**.
 
 ## Privacy
 
@@ -102,7 +103,7 @@ The Ledger framing is not decorative. Three of the five families really are pair
 
 ## Status
 
-ByteLife is at version 0.9.1 and actively developed. Traffic, storage, cognition, exposure, and mechanics all collect and render; the Ledger, the self-keeping books, receipts, and the General Ledger window are in place. Version 0.9.0 added the honest numbers: a steady trailing-window token rate on the COGNITION dial, the notional AI dollar cost at list prices, and the BYTELIFE COMPOSITE, a market-style index that compares each day against its own 28-day median instead of pretending tokens and bytes can be added. Version 0.9.1 dropped the reconcile ritual: days close themselves at midnight, historical days backfill in arrears so every recorded day carries a receipt, the open day renders a provisional receipt at any moment, and receipts print. On the roadmap: git and calendar activity, and multi-device support. It has no cloud sync, accounts, goals, streaks, or telemetry, by design.
+ByteLife is at version 0.10.0 and actively developed. Version 0.10.0 reorganizes the General Ledger by date and metric, adds daily trends and heatmaps, and puts connection totals in Traffic. Traffic, storage, cognition, exposure, and mechanics all collect and render; the Ledger, the self-keeping books, receipts, and the General Ledger window are in place. Version 0.9.0 added the honest numbers: a steady trailing-window token rate on the COGNITION dial, the notional AI dollar cost at list prices, and the BYTELIFE COMPOSITE, a market-style index that compares each day against its own 28-day median instead of pretending tokens and bytes can be added. Version 0.9.1 dropped the reconcile ritual: days close themselves at midnight, historical days backfill in arrears so every recorded day carries a receipt, the open day renders a provisional receipt at any moment, and receipts print. On the roadmap: git and calendar activity, and multi-device support. It has no cloud sync, accounts, goals, streaks, or telemetry, by design.
 
 ---
 

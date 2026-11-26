@@ -18,10 +18,11 @@ struct ByteLifeApplication: App {
         }
         .menuBarExtraStyle(.window)
 
-        // The General Ledger opens as its own window: the Back Office day dashboard.
+        // The General Ledger opens in its own window.
         Window("General Ledger", id: GeneralLedgerWindow.id) {
             GeneralLedgerView()
         }
+        .defaultSize(width: 1080, height: 720)
 
         // The Receipt window is value-presented by accounting day: the stable, titled host from which a
         // receipt shares (so compose targets like Messages keep their session). One window per day; a

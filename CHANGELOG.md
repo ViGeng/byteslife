@@ -115,3 +115,23 @@ The plan was to build and run the working tree as a local app with its own datab
 `./scripts/package-app.sh --dev` builds, signs, and opens `dist/ByteLife Dev.app`. The menu bar shows DEV, and the bundle keeps its test database in `~/Library/Application Support/ByteLife Dev/`. Running the command again quits the previous development instance and opens the rebuilt app.
 
 Verified the development bundle's signature, bundle identifier, and separate database on macOS. Running the command a second time replaced the original process with one new development instance.
+
+## 2026-11-26 21:45 CET · General Ledger browsing
+
+The plan was to make the Ledger navigable by date and metric, with one place for each module's details.
+
+By Date now opens a module overview for each day, week, or month. Traffic includes the daily connection breakdown, and the date header opens the receipt. By Metric shows trends and calendar heatmaps over 30, 90, or 365 days, with earlier ranges and links to the matching day.
+
+The debug build passed and ByteLife Dev is running. Focused checks passed for calendar alignment across daylight saving time, missing and zero values, period selection, chart-to-day totals, and connection records. Static SwiftUI previews were inspected with sample data. The Command Line Tools lack XCTest, and desktop automation access was unavailable for interactive verification.
+
+## 2026-11-26 21:51 CET · General Ledger desktop verification
+
+The plan was to restart ByteLife Dev and exercise the rebuilt Ledger on macOS after desktop control became available.
+
+Verified Today, Week, and Month overviews, Traffic details and its connection table, the metric picker and date range controls, and the return from both a trend bar and a heatmap cell to the matching day and module. The receipt opened in its own window with Share, Save, and Print controls. Today's Traffic totals and its connection table refresh on different schedules, which can briefly produce different totals during active collection.
+
+## 2026-11-26 21:54 CET · ByteLife 0.10.0
+
+The plan was to release the redesigned General Ledger and the connection tracking added since 0.9.1.
+
+ByteLife 0.10.0 brings date and metric browsing, daily trends and calendar heatmaps, and per-connection network totals. The app also gains a Finder icon and a separate development build. The Ledger navigation and drill-downs passed desktop verification. Focused checks covered historical rollups and connection tracking. The full XCTest suite requires an Xcode installation with XCTest.
